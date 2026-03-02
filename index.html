@@ -241,6 +241,7 @@
                   <th class="px-4 py-3 text-left">Bank</th>
                   <th class="px-4 py-3 text-left">Tax No.</th>
                   <th class="px-4 py-3 text-left">Start Date</th>
+                  <th class="px-4 py-3 text-center">Leave</th>
                   <th class="px-4 py-3 text-center">Actions</th>
                 </tr>
               </thead>
@@ -587,6 +588,31 @@
                 <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">Company Tax Number</label>
                 <input type="text" id="set-company-tax" class="w-full border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded-lg px-3 py-2 text-sm focus:border-blue-400" placeholder="Tax Registration No."/>
               </div>
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">Tax Year Start Month</label>
+                  <select id="set-tax-year-start" class="w-full border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded-lg px-3 py-2 text-sm focus:border-blue-400">
+                    <option value="1">January</option>
+                    <option value="2">February</option>
+                    <option value="3" selected>March (Namibia default)</option>
+                    <option value="4">April</option>
+                    <option value="5">May</option>
+                    <option value="6">June</option>
+                    <option value="7">July</option>
+                    <option value="8">August</option>
+                    <option value="9">September</option>
+                    <option value="10">October</option>
+                    <option value="11">November</option>
+                    <option value="12">December</option>
+                  </select>
+                  <p class="text-xs text-slate-400 dark:text-slate-500 mt-1">Namibian tax year: 1 March – 28/29 February. Used for YTD calculations on payslips.</p>
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">Default Annual Leave (days)</label>
+                  <input type="number" id="set-default-leave" min="0" step="1" class="w-full border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded-lg px-3 py-2 text-sm focus:border-blue-400" placeholder="20"/>
+                  <p class="text-xs text-slate-400 dark:text-slate-500 mt-1">Applied as default when adding new employees. Can be overridden per employee.</p>
+                </div>
+              </div>
               <button onclick="saveSettings()" class="bg-primary-500 hover:bg-primary-600 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors">Save Settings</button>
             </div>
           </div>
@@ -769,6 +795,25 @@
         <div class="col-span-2">
           <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Tax Number (NamRA)</label>
           <input type="text" id="ef-taxno" class="w-full border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded-lg px-3 py-2 text-sm focus:border-blue-400" placeholder="e.g. 123456789"/>
+        </div>
+
+        <!-- Leave -->
+        <div class="col-span-2">
+          <div class="flex items-center gap-2 mb-2 mt-1">
+            <div class="h-px flex-1 bg-slate-200 dark:bg-slate-600"></div>
+            <span class="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wide px-1">Leave</span>
+            <div class="h-px flex-1 bg-slate-200 dark:bg-slate-600"></div>
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Annual Leave Balance (days)</label>
+          <input type="number" id="ef-leave-balance" min="0" step="0.5" class="w-full border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded-lg px-3 py-2 text-sm focus:border-blue-400" placeholder="20"/>
+          <p class="text-xs text-slate-400 mt-1">Total days available this leave cycle</p>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Leave Taken to Date (days)</label>
+          <input type="number" id="ef-leave-taken" min="0" step="0.5" class="w-full border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded-lg px-3 py-2 text-sm focus:border-blue-400" placeholder="0"/>
+          <p class="text-xs text-slate-400 mt-1" id="ef-leave-remaining-preview"></p>
         </div>
       </div>
       <div id="emp-modal-warn" class="hidden text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg p-3"></div>
