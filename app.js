@@ -96,9 +96,28 @@ function calcEmployeePayroll(emp, entry) {
   return { basic, otNormal, otSun, otPay, allowances, otherEarnings, grossEarnings, sscEmployee, paye, otherDeductions, totalDeductions, netPay, employerSSC, employerTotalCost };
 }
 
-// ============================================================
-// PERSISTENCE
-// ============================================================
+// YTD months elapsed since tax year start for a given payroll period
+function ytdMonthsElapsed(runMonth, runYear) {
+  const startMonth = parseInt(settings.taxYearStart)||3; // default March
+  // Determine the tax year start date for this run's period
+  // If runMonth >= startMonth → same calendar year start; else previous year start
+  let taxYearStartMonth = startMonth;
+  let taxYearStartYear = (runMonth >= startMonth) ? runYear : runYear - 1;
+  // Count months from start to current (inclusive)
+  let months = (runYear - taxYearStartYear) * 12 + (runMonth - taxYearStartMonth) + 1;
+  return Math.max(1, months);
+}
+
+// Tax year start/end label for display (e.g. "Mar 2025 – Feb 2026")
+function taxYearLabel(runMonth, runYear) {
+  const startMonth = parseInt(settings.taxYearStart)||3;
+  const endMonth = startMonth === 1 ? 12 : startMonth - 1;
+  const startYear = (runMonth >= startMonth) ? runYear : runYear - 1;
+  const endYear = startMonth === 1 ? startYear : startYear + 1;
+  return `${monthName(startMonth)} ${startYear} – ${monthName(endMonth)} ${endYear}`;
+}
+
+
 function load() {
   employees = JSON.parse(localStorage.getItem('smartpayroll_employees') || '[]');
   payrollRuns = JSON.parse(localStorage.getItem('smartpayroll_runs') || '[]');
@@ -150,7 +169,7 @@ function renderEmployees() {
   const tbody = document.getElementById('emp-table-body');
   document.getElementById('emp-count-badge').textContent = employees.length;
   if(!filtered.length) {
-    tbody.innerHTML=`<tr><td colspan="8" class="px-4 py-8 text-center text-slate-400 italic text-sm">No employees found.</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="9" class="px-4 py-8 text-center text-slate-400 italic text-sm">No employees found.</td></tr>`;
     return;
   }
   tbody.innerHTML = filtered.map(e=>{
@@ -174,6 +193,22 @@ function renderEmployees() {
       <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">${esc(e.bankName||'')} ${e.accountNo?`<span class="font-mono">···${e.accountNo.slice(-4)}</span>`:''}</td>
       <td class="px-4 py-3 text-xs font-mono text-slate-500 dark:text-slate-400">${esc(e.taxNo||'–')}</td>
       <td class="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">${esc(e.startDate||'–')}</td>
+      <td class="px-4 py-3 text-center">
+        ${(()=>{
+          const bal = e.leaveBalance||0;
+          const taken = e.leaveTaken||0;
+          const remaining = bal - taken;
+          const pct = bal > 0 ? Math.round((remaining/bal)*100) : 0;
+          const color = remaining <= 0 ? 'red' : remaining <= bal*0.25 ? 'amber' : 'green';
+          return `<div class="flex flex-col items-center gap-0.5">
+            <span class="text-xs font-semibold text-slate-800 dark:text-slate-200">${remaining < 0 ? '<span class=\"text-red-500\">'+remaining+'</span>' : remaining} <span class="text-slate-400 font-normal">/ ${bal}</span></span>
+            <div class="w-16 h-1.5 bg-slate-200 dark:bg-slate-600 rounded-full overflow-hidden">
+              <div class="h-full bg-${color}-500 rounded-full transition-all" style="width:${Math.min(100,Math.max(0,pct))}%"></div>
+            </div>
+            <span class="text-xs text-slate-400">${taken} taken</span>
+          </div>`;
+        })()}
+      </td>
       <td class="px-4 py-3 text-center">
         <div class="flex items-center justify-center gap-1">
           <button onclick="openEmpModal('${e.id}')" class="p-1.5 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 text-blue-600 dark:text-blue-400 transition-colors" title="Edit"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg></button>
@@ -202,9 +237,15 @@ function openEmpModal(id=null) {
     document.getElementById('ef-account').value = e.accountNo||'';
     document.getElementById('ef-taxno').value = e.taxNo||'';
     document.getElementById('ef-startdate').value = e.startDate||'';
+    document.getElementById('ef-leave-balance').value = e.leaveBalance != null ? e.leaveBalance : (settings.defaultLeave||20);
+    document.getElementById('ef-leave-taken').value = e.leaveTaken||0;
+    updateLeavePreview();
   } else {
     document.getElementById('emp-form').reset();
     setPayType('monthly');
+    document.getElementById('ef-leave-balance').value = settings.defaultLeave||20;
+    document.getElementById('ef-leave-taken').value = 0;
+    updateLeavePreview();
   }
   document.getElementById('emp-modal').classList.remove('hidden');
 }
@@ -242,7 +283,9 @@ function saveEmployee(e) {
     bankName: document.getElementById('ef-bank').value.trim(),
     accountNo: document.getElementById('ef-account').value.trim(),
     taxNo: document.getElementById('ef-taxno').value.trim(),
-    startDate: document.getElementById('ef-startdate').value
+    startDate: document.getElementById('ef-startdate').value,
+    leaveBalance: parseFloat(document.getElementById('ef-leave-balance').value)||0,
+    leaveTaken: parseFloat(document.getElementById('ef-leave-taken').value)||0
   };
   if(editingEmpId) {
     const idx = employees.findIndex(x=>x.id===editingEmpId);
@@ -267,8 +310,8 @@ function deleteEmployee(id) {
 // CSV Export
 function exportCSV() {
   if(!employees.length){ toast('No employees to export.','red'); return; }
-  const headers = ['Full Name','Employee ID','Position','Pay Type','Basic Salary (NAD)','Hourly Rate (NAD)','Bank Name','Account Number','Tax Number','Start Date'];
-  const rows = employees.map(e=>[e.name,e.empId,e.position,e.payType||'monthly',e.basicSalary||0,e.hourlyRate||0,e.bankName||'',e.accountNo||'',e.taxNo||'',e.startDate||'']);
+  const headers = ['Full Name','Employee ID','Position','Pay Type','Basic Salary (NAD)','Hourly Rate (NAD)','Bank Name','Account Number','Tax Number','Start Date','Leave Balance (days)','Leave Taken (days)'];
+  const rows = employees.map(e=>[e.name,e.empId,e.position,e.payType||'monthly',e.basicSalary||0,e.hourlyRate||0,e.bankName||'',e.accountNo||'',e.taxNo||'',e.startDate||'',e.leaveBalance||0,e.leaveTaken||0]);
   const csv = [headers,...rows].map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
   downloadText(csv,'smartpayroll_employees.csv','text/csv');
   toast('CSV exported successfully.','green');
@@ -295,10 +338,13 @@ function importCSV(event) {
         basicSalary=parseFloat(cols[3])||0;
         bankName=cols[4]||''; accountNo=cols[5]||''; taxNo=cols[6]||''; startDate=cols[7]||'';
       }
+      const leaveBalanceVal = hasPayType && cols.length>=12 ? (parseFloat(cols[10])||0) : (settings.defaultLeave||20);
+      const leaveTakenVal   = hasPayType && cols.length>=12 ? (parseFloat(cols[11])||0) : 0;
       employees.push({
         id:'emp_'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
         name:cols[0]||'', empId:cols[1]||'', position:cols[2]||'',
-        payType, basicSalary, hourlyRate, bankName, accountNo, taxNo, startDate
+        payType, basicSalary, hourlyRate, bankName, accountNo, taxNo, startDate,
+        leaveBalance: leaveBalanceVal, leaveTaken: leaveTakenVal
       });
       count++;
     });
@@ -534,6 +580,38 @@ function buildDetailForm(emp, entry) {
         </div>`).join('')}
       </div>
     </div>
+    <!-- Leave this month -->
+    <div>
+      <div class="flex items-center gap-2 mb-2">
+        <div class="h-px flex-1 bg-slate-200 dark:bg-slate-600"></div>
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide px-1">Leave</span>
+        <div class="h-px flex-1 bg-slate-200 dark:bg-slate-600"></div>
+      </div>
+      <div class="bg-slate-50 dark:bg-slate-700/40 rounded-xl p-3 mb-3">
+        <div class="flex justify-between text-xs mb-1">
+          <span class="text-slate-500 dark:text-slate-400">Balance</span>
+          <span class="font-semibold text-slate-700 dark:text-slate-200">${emp.leaveBalance||0} days</span>
+        </div>
+        <div class="flex justify-between text-xs mb-2">
+          <span class="text-slate-500 dark:text-slate-400">Taken to date</span>
+          <span class="font-semibold text-slate-700 dark:text-slate-200">${emp.leaveTaken||0} days</span>
+        </div>
+        <div class="flex justify-between text-xs font-semibold mb-1.5">
+          <span class="text-slate-600 dark:text-slate-300">Remaining</span>
+          <span class="${((emp.leaveBalance||0)-(emp.leaveTaken||0))<=0?'text-red-500':'text-emerald-600 dark:text-emerald-400'}" id="dm-leave-remaining-val">${((emp.leaveBalance||0)-(emp.leaveTaken||0)).toFixed(1)} days</span>
+        </div>
+        <div class="w-full h-2 bg-slate-200 dark:bg-slate-600 rounded-full overflow-hidden">
+          <div class="h-full rounded-full transition-all ${((emp.leaveBalance||0)-(emp.leaveTaken||0))<=0?'bg-red-500':((emp.leaveBalance||0)-(emp.leaveTaken||0))<=(emp.leaveBalance||0)*0.25?'bg-amber-500':'bg-emerald-500'}" id="dm-leave-bar" style="width:${emp.leaveBalance>0?Math.min(100,Math.max(0,Math.round((((emp.leaveBalance||0)-(emp.leaveTaken||0))/(emp.leaveBalance||1))*100))):0}%"></div>
+        </div>
+      </div>
+      <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Leave Days Taken This Month</label>
+      <div class="flex items-center gap-2">
+        <input type="number" id="dm-leave-month" min="0" step="0.5" value="${entry.leaveThisMonth||0}"
+          oninput="dmUpdateLeavePreview(${emp.leaveBalance||0}, ${emp.leaveTaken||0}, this.value)"
+          class="w-24 border-2 border-emerald-400 dark:border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg px-3 py-2 text-sm focus:border-emerald-500 font-semibold"/>
+        <span class="text-xs text-slate-500 dark:text-slate-400">days — updates employee leave balance on apply</span>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -563,12 +641,26 @@ function removeDetailRow(containerId, idx, type) {
 
 function applyPayrollDetail() {
   const empId = payrollDetailEmpId;
-  if(!payrollEntries[empId]) payrollEntries[empId]={otNormal:0,otSun:0,hoursWorked:0,allowances:[],otherEarnings:0,deductions:[]};
+  if(!payrollEntries[empId]) payrollEntries[empId]={otNormal:0,otSun:0,hoursWorked:0,allowances:[],otherEarnings:0,deductions:[],leaveThisMonth:0};
   const hwInput = document.getElementById('dm-hours-worked');
   if(hwInput) payrollEntries[empId].hoursWorked = parseFloat(hwInput.value)||0;
   payrollEntries[empId].otNormal = parseFloat(document.getElementById('dm-ot-normal').value)||0;
   payrollEntries[empId].otSun = parseFloat(document.getElementById('dm-ot-sun').value)||0;
   payrollEntries[empId].otherEarnings = parseFloat(document.getElementById('dm-other-earn').value)||0;
+  // Capture leave this month and update employee's cumulative taken
+  const leaveInput = document.getElementById('dm-leave-month');
+  if(leaveInput) {
+    const newLeaveThisMonth = parseFloat(leaveInput.value)||0;
+    const prevLeaveThisMonth = payrollEntries[empId].leaveThisMonth||0;
+    const delta = newLeaveThisMonth - prevLeaveThisMonth;
+    payrollEntries[empId].leaveThisMonth = newLeaveThisMonth;
+    // Update employee's cumulative leaveTaken
+    const empIdx = employees.findIndex(e=>e.id===empId);
+    if(empIdx>=0) {
+      employees[empIdx].leaveTaken = Math.max(0, (employees[empIdx].leaveTaken||0) + delta);
+      saveEmployees();
+    }
+  }
   // Read allowances from DOM
   const allowRows = document.querySelectorAll('#dm-allows > div');
   payrollEntries[empId].allowances = [];
@@ -790,7 +882,7 @@ function buildPayslipPDF(empData, run) {
     if(c.otPay>0)earningRowL('Overtime Pay',c.otPay);
     (empData.entry?.allowances||[]).forEach(a=>{if(a.amount>0)earningRowL(a.desc||'Allowance',a.amount);});
     if(c.otherEarnings>0)earningRowL('Other Earnings',c.otherEarnings);
-    if(lc.showYTD){doc.setTextColor(160,160,160);earningRowL('YTD Gross',c.grossEarnings*3);doc.setTextColor(50,50,50);}
+    if(lc.showYTD){doc.setTextColor(160,160,160);earningRowL(`YTD Gross (${taxYearLabel(run.month,run.year)})`,c.grossEarnings*ytdMonthsElapsed(run.month,run.year));doc.setTextColor(50,50,50);}
     doc.setFillColor(...hex2rgb(lc.earningsBg));doc.rect(margin,ey-1,colW,7,'F');
     doc.setFontSize(9);doc.setFont(pFont,'bold');doc.setTextColor(...pc);doc.text('GROSS',margin+2,ey+4);
     const gw=doc.getTextWidth(fmtN(c.grossEarnings));doc.text(fmtN(c.grossEarnings),margin+colW-gw,ey+4);ey+=8;
@@ -820,7 +912,7 @@ function buildPayslipPDF(empData, run) {
     if(c.otPay>0){const hrs=`(${empData.entry?.otNormal||0}h ×1.5, ${empData.entry?.otSun||0}h ×2)`;earningRow(`Overtime Pay ${hrs}`,c.otPay);}
     (empData.entry?.allowances||[]).forEach(a=>{if(a.amount>0)earningRow(`Allowance: ${a.desc}`,a.amount);});
     if(c.otherEarnings>0)earningRow('Other Earnings',c.otherEarnings);
-    if(lc.showYTD){doc.setTextColor(160,160,160);earningRow('YTD Gross Earnings',c.grossEarnings*run.month);doc.setTextColor(50,50,50);}
+    if(lc.showYTD){doc.setTextColor(160,160,160);earningRow(`YTD Gross Earnings (${taxYearLabel(run.month,run.year)})`,c.grossEarnings*ytdMonthsElapsed(run.month,run.year));doc.setTextColor(50,50,50);}
     doc.setFillColor(...hex2rgb(lc.earningsBg));doc.rect(margin,startY-1,w-margin*2,8,'F');
     doc.setFontSize(9.5);doc.setFont(pFont,'bold');doc.setTextColor(...pc);doc.text('GROSS EARNINGS',margin+2,startY+5);
     textR(startY+5,fmtN(c.grossEarnings),9.5,'bold',pc); startY+=12;
@@ -956,7 +1048,7 @@ function printPayslip(month,year,empId) {
       ${c.otPay>0?`<div class="row"><span>Overtime Pay</span><span>${fmtN(c.otPay)}</span></div>`:''}
       ${(empData.entry?.allowances||[]).filter(a=>a.amount>0).map(a=>`<div class="row"><span>${esc(a.desc)}</span><span>${fmtN(a.amount)}</span></div>`).join('')}
       ${c.otherEarnings>0?`<div class="row"><span>Other Earnings</span><span>${fmtN(c.otherEarnings)}</span></div>`:''}
-      ${lc.showYTD?`<div class="row" style="color:#888;font-size:10px"><span>YTD Gross</span><span>${fmtN(c.grossEarnings*run.month)}</span></div>`:''}
+      ${lc.showYTD?`<div class="row" style="color:#888;font-size:10px"><span>YTD Gross (${taxYearLabel(run.month,run.year)})</span><span>${fmtN(c.grossEarnings*ytdMonthsElapsed(run.month,run.year))}</span></div>`:''}
       <div class="row" style="background:${eb};padding:3px 5px;font-weight:bold;color:${p};margin-top:3px"><span>GROSS</span><span>${fmtN(c.grossEarnings)}</span></div>
     </td>
     <td style="width:50%;vertical-align:top;padding-left:10px;border-left:1px solid #e2e8f0">
@@ -972,7 +1064,7 @@ function printPayslip(month,year,empId) {
   ${c.otPay>0?`<div class="row"><span>Overtime Pay</span><span>${fmtN(c.otPay)}</span></div>`:''}
   ${(empData.entry?.allowances||[]).filter(a=>a.amount>0).map(a=>`<div class="row"><span>Allowance: ${esc(a.desc)}</span><span>${fmtN(a.amount)}</span></div>`).join('')}
   ${c.otherEarnings>0?`<div class="row"><span>Other Earnings</span><span>${fmtN(c.otherEarnings)}</span></div>`:''}
-  ${lc.showYTD?`<div class="row" style="color:#888;font-size:10px"><span>YTD Gross Earnings</span><span>${fmtN(c.grossEarnings*run.month)}</span></div>`:''}
+  ${lc.showYTD?`<div class="row" style="color:#888;font-size:10px"><span>YTD Gross Earnings (${taxYearLabel(run.month,run.year)})</span><span>${fmtN(c.grossEarnings*ytdMonthsElapsed(run.month,run.year))}</span></div>`:''}
   <div class="row" style="background:${eb};padding:3px 5px;font-weight:bold;color:${p};margin-top:3px"><span>GROSS EARNINGS</span><span>${fmtN(c.grossEarnings)}</span></div>
   <div style="margin-top:8px;font-weight:bold;color:#991b1b;border-bottom:2px solid #f87171;padding-bottom:2px;margin-bottom:5px;font-size:10px">DEDUCTIONS</div>
   <div class="row" style="color:#991b1b"><span>PAYE (Income Tax)</span><span>${fmtN(c.paye)}</span></div>
@@ -1032,6 +1124,8 @@ function loadSettingsForm() {
   document.getElementById('set-company-reg').value = settings.companyReg||'';
   document.getElementById('set-company-addr').value = settings.companyAddr||'';
   document.getElementById('set-company-tax').value = settings.companyTax||'';
+  document.getElementById('set-tax-year-start').value = settings.taxYearStart||3;
+  document.getElementById('set-default-leave').value = settings.defaultLeave||20;
 }
 
 function saveSettings() {
@@ -1039,6 +1133,8 @@ function saveSettings() {
   settings.companyReg = document.getElementById('set-company-reg').value;
   settings.companyAddr = document.getElementById('set-company-addr').value;
   settings.companyTax = document.getElementById('set-company-tax').value;
+  settings.taxYearStart = parseInt(document.getElementById('set-tax-year-start').value)||3;
+  settings.defaultLeave = parseFloat(document.getElementById('set-default-leave').value)||20;
   saveSettingsData();
   toast('Settings saved.','green');
 }
@@ -1061,11 +1157,11 @@ function clearAllData() {
 function resetDemoData() {
   if(employees.length && !confirm('This will add 5 sample Namibian employees. Continue?')) return;
   const demos = [
-    {id:'emp_d1',name:'Ama Ndjovu',empId:'EMP001',position:'Senior Developer',payType:'monthly',basicSalary:35000,hourlyRate:0,bankName:'FNB Namibia',accountNo:'62456789012',taxNo:'1234567890',startDate:'2022-03-01'},
-    {id:'emp_d2',name:'Johannes Shikongo',empId:'EMP002',position:'HR Manager',payType:'monthly',basicSalary:28000,hourlyRate:0,bankName:'Standard Bank',accountNo:'55234567890',taxNo:'2345678901',startDate:'2021-07-15'},
-    {id:'emp_d3',name:'Maria Katutura',empId:'EMP003',position:'Accountant',payType:'monthly',basicSalary:22000,hourlyRate:0,bankName:'Nedbank Namibia',accountNo:'11023456789',taxNo:'3456789012',startDate:'2023-01-20'},
-    {id:'emp_d4',name:'Samuel Haipinge',empId:'EMP004',position:'Driver',payType:'hourly',basicSalary:0,hourlyRate:65,bankName:'Bank Windhoek',accountNo:'89012345678',taxNo:'4567890123',startDate:'2023-06-01'},
-    {id:'emp_d5',name:'Grace Nghidipo',empId:'EMP005',position:'Admin Clerk',payType:'hourly',basicSalary:0,hourlyRate:20,bankName:'FNB Namibia',accountNo:'62987654321',taxNo:'5678901234',startDate:'2024-01-10'}
+    {id:'emp_d1',name:'Ama Ndjovu',empId:'EMP001',position:'Senior Developer',payType:'monthly',basicSalary:35000,hourlyRate:0,bankName:'FNB Namibia',accountNo:'62456789012',taxNo:'1234567890',startDate:'2022-03-01',leaveBalance:20,leaveTaken:5},
+    {id:'emp_d2',name:'Johannes Shikongo',empId:'EMP002',position:'HR Manager',payType:'monthly',basicSalary:28000,hourlyRate:0,bankName:'Standard Bank',accountNo:'55234567890',taxNo:'2345678901',startDate:'2021-07-15',leaveBalance:20,leaveTaken:12},
+    {id:'emp_d3',name:'Maria Katutura',empId:'EMP003',position:'Accountant',payType:'monthly',basicSalary:22000,hourlyRate:0,bankName:'Nedbank Namibia',accountNo:'11023456789',taxNo:'3456789012',startDate:'2023-01-20',leaveBalance:15,leaveTaken:0},
+    {id:'emp_d4',name:'Samuel Haipinge',empId:'EMP004',position:'Driver',payType:'hourly',basicSalary:0,hourlyRate:65,bankName:'Bank Windhoek',accountNo:'89012345678',taxNo:'4567890123',startDate:'2023-06-01',leaveBalance:15,leaveTaken:8},
+    {id:'emp_d5',name:'Grace Nghidipo',empId:'EMP005',position:'Admin Clerk',payType:'hourly',basicSalary:0,hourlyRate:20,bankName:'FNB Namibia',accountNo:'62987654321',taxNo:'5678901234',startDate:'2024-01-10',leaveBalance:10,leaveTaken:10}
   ];
   demos.forEach(d=>{ if(!employees.find(e=>e.id===d.id)) employees.push(d); });
   saveEmployees(); renderEmployees(); updateDashboard();
@@ -1426,6 +1522,47 @@ renderEmployees();
 
 
 // ============================================================
+// LEAVE HELPERS
+// ============================================================
+function updateLeavePreview() {
+  const balance = parseFloat(document.getElementById('ef-leave-balance').value)||0;
+  const taken   = parseFloat(document.getElementById('ef-leave-taken').value)||0;
+  const remaining = balance - taken;
+  const el = document.getElementById('ef-leave-remaining-preview');
+  if(!el) return;
+  if(balance === 0 && taken === 0) { el.textContent=''; return; }
+  const color = remaining <= 0 ? 'text-red-500' : remaining <= balance*0.25 ? 'text-amber-500' : 'text-emerald-600';
+  el.className = `text-xs mt-1 font-medium ${color}`;
+  el.textContent = `${remaining.toFixed(1)} days remaining`;
+}
+
+function dmUpdateLeavePreview(balance, baseTaken, newMonthVal) {
+  const monthDays = parseFloat(newMonthVal)||0;
+  const newTaken = baseTaken + monthDays;
+  const remaining = balance - newTaken;
+  const el = document.getElementById('dm-leave-remaining-val');
+  const bar = document.getElementById('dm-leave-bar');
+  if(el) {
+    el.textContent = `${remaining.toFixed(1)} days`;
+    el.className = remaining<=0 ? 'text-red-500 font-semibold' : 'text-emerald-600 dark:text-emerald-400 font-semibold';
+  }
+  if(bar && balance>0) {
+    const pct = Math.min(100,Math.max(0,Math.round((remaining/balance)*100)));
+    bar.style.width = pct+'%';
+    bar.className = bar.className.replace(/bg-\w+-\d+/g,'') +
+      (remaining<=0?' bg-red-500':remaining<=balance*0.25?' bg-amber-500':' bg-emerald-500');
+  }
+}
+
+// Wire up live leave preview in employee modal
+document.addEventListener('DOMContentLoaded', ()=>{
+  const lb = document.getElementById('ef-leave-balance');
+  const lt = document.getElementById('ef-leave-taken');
+  if(lb) lb.addEventListener('input', updateLeavePreview);
+  if(lt) lt.addEventListener('input', updateLeavePreview);
+});
+
+// ============================================================
 // PAY TYPE TOGGLE
 // ============================================================
 function setPayType(type) {
@@ -1629,9 +1766,9 @@ function exportEmployeesJSON() {
 // ── Employees — CSV (existing logic, wrapped) ───────────────
 function exportEmployeesCSV() {
   if (!employees.length) { toast('No employees to export.','red'); return; }
-  const header = 'Name,Employee ID,Position,Pay Type,Basic Salary,Hourly Rate,Bank Name,Account No,Tax No,Start Date';
+  const header = 'Name,Employee ID,Position,Pay Type,Basic Salary,Hourly Rate,Bank Name,Account No,Tax No,Start Date,Leave Balance,Leave Taken';
   const rows = employees.map(e =>
-    [e.name, e.empId, e.position, e.payType||'monthly', e.basicSalary||0, e.hourlyRate||0, e.bankName||'', e.accountNo||'', e.taxNo||'', e.startDate||'']
+    [e.name, e.empId, e.position, e.payType||'monthly', e.basicSalary||0, e.hourlyRate||0, e.bankName||'', e.accountNo||'', e.taxNo||'', e.startDate||'', e.leaveBalance||0, e.leaveTaken||0]
       .map(v => `"${String(v).replace(/"/g,'""')}"`)
       .join(',')
   );
@@ -1869,12 +2006,12 @@ function importFromCSV(content) {
   let count = 0, updated = 0;
   lines.slice(1).forEach(line => {
     const cols = parseCSVRow(line);
-    let name, empId, position, payType, basicSalary, hourlyRate, bankName, accountNo, taxNo, startDate;
+    let name, empId, position, payType, basicSalary, hourlyRate, bankName, accountNo, taxNo, startDate, leaveBalance, leaveTaken;
     if (hasPayType) {
-      [name, empId, position, payType, basicSalary, hourlyRate, bankName, accountNo, taxNo, startDate] = cols;
+      [name, empId, position, payType, basicSalary, hourlyRate, bankName, accountNo, taxNo, startDate, leaveBalance, leaveTaken] = cols;
     } else {
       [name, empId, position, basicSalary, bankName, accountNo, taxNo, startDate] = cols;
-      payType = 'monthly'; hourlyRate = 0;
+      payType = 'monthly'; hourlyRate = 0; leaveBalance = settings.defaultLeave||20; leaveTaken = 0;
     }
     if (!name || !empId) return;
     const pt = (payType||'monthly').trim().toLowerCase();
@@ -1886,7 +2023,9 @@ function importFromCSV(content) {
       basicSalary: pt === 'monthly' ? (parseFloat(basicSalary)||0) : 0,
       hourlyRate:  pt === 'hourly'  ? (parseFloat(hourlyRate)||0) : 0,
       bankName: (bankName||'').trim(), accountNo: (accountNo||'').trim(),
-      taxNo: (taxNo||'').trim(), startDate: (startDate||'').trim()
+      taxNo: (taxNo||'').trim(), startDate: (startDate||'').trim(),
+      leaveBalance: parseFloat(leaveBalance)||0,
+      leaveTaken: parseFloat(leaveTaken)||0
     };
     if (existing >= 0) { employees[existing] = emp; updated++; } else { employees.push(emp); count++; }
   });
