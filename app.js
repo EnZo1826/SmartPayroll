@@ -761,7 +761,9 @@ function generatePDF(month, year, empId) {
   if(!run) return;
   const empData = (run.results||[]).find(r=>r.id===empId);
   if(!empData) return;
-  buildPayslipPDF(empData, run);
+  // Merge current employee record so leave fields (and any future fields) are always fresh
+  const liveEmp = employees.find(e=>e.id===empId);
+  buildPayslipPDF(Object.assign({}, empData, liveEmp ? { leaveBalance: liveEmp.leaveBalance, leaveTaken: liveEmp.leaveTaken, hourlyRate: liveEmp.hourlyRate, payType: liveEmp.payType } : {}), run);
 }
 
 function generateBatchPDF(month, year) {
@@ -769,7 +771,9 @@ function generateBatchPDF(month, year) {
   if(!run||!run.results.length) return;
   toast('Generating batch PDFs...','blue');
   run.results.forEach((empData,i)=>{
-    setTimeout(()=>buildPayslipPDF(empData, run), i*300);
+    const liveEmp = employees.find(e=>e.id===empData.id);
+    const enriched = Object.assign({}, empData, liveEmp ? { leaveBalance: liveEmp.leaveBalance, leaveTaken: liveEmp.leaveTaken, hourlyRate: liveEmp.hourlyRate, payType: liveEmp.payType } : {});
+    setTimeout(()=>buildPayslipPDF(enriched, run), i*300);
   });
 }
 
@@ -893,6 +897,7 @@ function buildPayslipPDF(empData, run) {
     let dy=startY+7;
     const dedRowL=(label,amt)=>{ doc.setFontSize(8);doc.setFont(pFont,'normal');doc.setTextColor(120,30,30);doc.text(label,dx,dy);const s=fmtN(amt);const tw=doc.getTextWidth(s);doc.text(s,dx+colW-tw,dy);dy+=5; };
     dedRowL('PAYE (Income Tax)',c.paye);
+    if(lc.showYTD){doc.setTextColor(160,100,100);dedRowL(`YTD PAYE (${taxYearLabel(run.month,run.year)})`,c.paye*ytdMonthsElapsed(run.month,run.year));doc.setTextColor(120,30,30);}
     dedRowL('SSC Employee',c.sscEmployee);
     (empData.entry?.deductions||[]).forEach(d=>{if(d.amount>0)dedRowL(d.desc,d.amount);});
     doc.setFillColor(...hex2rgb(lc.deductionsBg));doc.rect(dx,dy-1,colW,7,'F');
@@ -925,6 +930,7 @@ function buildPayslipPDF(empData, run) {
       const s=fmtN(amt);const tw=doc.getTextWidth(s);doc.text(s,w-margin-tw,startY);startY+=5;
     };
     dedRow('PAYE (Income Tax)',c.paye);
+    if(lc.showYTD){doc.setTextColor(160,100,100);dedRow(`YTD PAYE (${taxYearLabel(run.month,run.year)})`,c.paye*ytdMonthsElapsed(run.month,run.year));doc.setTextColor(120,30,30);}
     dedRow('SSC Employee Contribution',c.sscEmployee);
     (empData.entry?.deductions||[]).forEach(d=>{if(d.amount>0)dedRow(d.desc,d.amount);});
     doc.setFillColor(...hex2rgb(lc.deductionsBg));doc.rect(margin,startY-1,w-margin*2,8,'F');
@@ -960,6 +966,25 @@ function buildPayslipPDF(empData, run) {
     doc.setFontSize(8);doc.setFont(pFont,'normal');doc.setTextColor(120,120,120);
     doc.text(`Employer SSC: ${fmtN(c.employerSSC)}   |   Employer Total Cost: ${fmtN(c.employerTotalCost)}`,margin+3,startY+6);
     startY+=14;
+  }
+
+  // ---- LEAVE SUMMARY ----
+  {
+    const leaveBalance   = empData.leaveBalance   || 0;
+    const leaveTaken     = empData.leaveTaken     || 0;
+    const leaveThisMonth = empData.entry?.leaveThisMonth || 0;
+    const leaveRemaining = leaveBalance - leaveTaken;
+    if(leaveBalance > 0 || leaveTaken > 0) {
+      doc.setFillColor(240,253,244); doc.rect(margin, startY, w-margin*2, 10, 'F');
+      doc.setDrawColor(34,197,94); doc.setLineWidth(0.3);
+      doc.rect(margin, startY, w-margin*2, 10, 'S'); doc.setLineWidth(0.2);
+      doc.setFontSize(7.5); doc.setFont(pFont,'bold'); doc.setTextColor(22,101,52);
+      doc.text('LEAVE', margin+3, startY+4);
+      const leaveStr = `Balance: ${leaveBalance} days  |  This Month: ${leaveThisMonth} days  |  Total Taken: ${leaveTaken} days  |  Remaining: ${leaveRemaining.toFixed(1)} days`;
+      doc.setFont(pFont,'normal'); doc.setTextColor(22,101,52);
+      doc.text(leaveStr, margin+3, startY+8);
+      startY += 14;
+    }
   }
 
   // ---- WATERMARK ----
@@ -999,8 +1024,11 @@ function buildPayslipPDF(empData, run) {
 function printPayslip(month,year,empId) {
   const run = payrollRuns.find(r=>r.month==month&&r.year==year);
   if(!run) return;
-  const empData = (run.results||[]).find(r=>r.id===empId);
-  if(!empData) return;
+  const snap = (run.results||[]).find(r=>r.id===empId);
+  if(!snap) return;
+  // Merge current employee leave/pay data so stale snapshots still show correct leave info
+  const liveEmp = employees.find(e=>e.id===empId);
+  const empData = Object.assign({}, snap, liveEmp ? { leaveBalance: liveEmp.leaveBalance, leaveTaken: liveEmp.leaveTaken, hourlyRate: liveEmp.hourlyRate, payType: liveEmp.payType } : {});
   const lc = layoutConfig;
   const fontMap = { arial:"'Arial', sans-serif", times:"'Times New Roman', serif", georgia:"'Georgia', serif", courier:"'Courier New', monospace" };
   const fontFamily = fontMap[lc.font] || fontMap.arial;
@@ -1054,6 +1082,7 @@ function printPayslip(month,year,empId) {
     <td style="width:50%;vertical-align:top;padding-left:10px;border-left:1px solid #e2e8f0">
       <div style="font-weight:bold;color:#991b1b;border-bottom:2px solid #f87171;padding-bottom:2px;margin-bottom:6px;font-size:10px">DEDUCTIONS</div>
       <div class="row" style="color:#991b1b"><span>PAYE</span><span>${fmtN(c.paye)}</span></div>
+      ${lc.showYTD?`<div class="row" style="color:#b45309;font-size:10px"><span>YTD PAYE (${taxYearLabel(run.month,run.year)})</span><span>${fmtN(c.paye*ytdMonthsElapsed(run.month,run.year))}</span></div>`:''}
       <div class="row" style="color:#991b1b"><span>SSC Employee</span><span>${fmtN(c.sscEmployee)}</span></div>
       ${(empData.entry?.deductions||[]).filter(d=>d.amount>0).map(d=>`<div class="row" style="color:#991b1b"><span>${esc(d.desc)}</span><span>${fmtN(d.amount)}</span></div>`).join('')}
       <div class="row" style="background:${db};padding:3px 5px;font-weight:bold;color:#991b1b;margin-top:3px"><span>TOTAL DED.</span><span>${fmtN(c.totalDeductions)}</span></div>
@@ -1068,11 +1097,31 @@ function printPayslip(month,year,empId) {
   <div class="row" style="background:${eb};padding:3px 5px;font-weight:bold;color:${p};margin-top:3px"><span>GROSS EARNINGS</span><span>${fmtN(c.grossEarnings)}</span></div>
   <div style="margin-top:8px;font-weight:bold;color:#991b1b;border-bottom:2px solid #f87171;padding-bottom:2px;margin-bottom:5px;font-size:10px">DEDUCTIONS</div>
   <div class="row" style="color:#991b1b"><span>PAYE (Income Tax)</span><span>${fmtN(c.paye)}</span></div>
+  ${lc.showYTD?`<div class="row" style="color:#b45309;font-size:10px"><span>YTD PAYE (${taxYearLabel(run.month,run.year)})</span><span>${fmtN(c.paye*ytdMonthsElapsed(run.month,run.year))}</span></div>`:''}
   <div class="row" style="color:#991b1b"><span>SSC Employee</span><span>${fmtN(c.sscEmployee)}</span></div>
   ${(empData.entry?.deductions||[]).filter(d=>d.amount>0).map(d=>`<div class="row" style="color:#991b1b"><span>${esc(d.desc)}</span><span>${fmtN(d.amount)}</span></div>`).join('')}
   <div class="row" style="background:${db};padding:3px 5px;font-weight:bold;color:#991b1b;margin-top:3px"><span>TOTAL DEDUCTIONS</span><span>${fmtN(c.totalDeductions)}</span></div>`}
   ${netHtml}
   ${lc.showEmployerCosts?`<div style="background:#f8fafc;border:1px solid #e2e8f0;padding:7px 10px;font-size:10px;color:#666;margin-top:4px"><strong>Employer:</strong>&nbsp; SSC: ${fmtN(c.employerSSC)} &nbsp;|&nbsp; Total Cost: ${fmtN(c.employerTotalCost)}</div>`:''}
+  ${(()=>{
+    const lb  = empData.leaveBalance   || 0;
+    const ltk = empData.leaveTaken     || 0;
+    const lm  = empData.entry?.leaveThisMonth || 0;
+    const lr  = lb - ltk;
+    if(lb===0 && ltk===0) return '';
+    const barW = lb>0 ? Math.min(100,Math.max(0,Math.round((lr/lb)*100))) : 0;
+    const barColor = lr<=0?'#ef4444':lr<=lb*0.25?'#f59e0b':'#22c55e';
+    return `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-left:3px solid #22c55e;padding:7px 10px;margin-top:6px;border-radius:4px">
+      <div style="font-size:9px;font-weight:bold;color:#15803d;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Leave</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:5px">
+        <div style="text-align:center"><div style="font-size:9px;color:#86efac">Balance</div><div style="font-size:11px;font-weight:bold;color:#166534">${lb}</div></div>
+        <div style="text-align:center"><div style="font-size:9px;color:#86efac">This Month</div><div style="font-size:11px;font-weight:bold;color:#166534">${lm}</div></div>
+        <div style="text-align:center"><div style="font-size:9px;color:#86efac">Total Taken</div><div style="font-size:11px;font-weight:bold;color:#166534">${ltk}</div></div>
+        <div style="text-align:center"><div style="font-size:9px;color:#86efac">Remaining</div><div style="font-size:11px;font-weight:bold;color:${lr<=0?'#dc2626':lr<=lb*0.25?'#d97706':'#166534'}">${lr.toFixed(1)}</div></div>
+      </div>
+      <div style="background:#dcfce7;border-radius:3px;height:5px;overflow:hidden"><div style="background:${barColor};height:100%;width:${barW}%;transition:width .3s"></div></div>
+    </div>`;
+  })()}
   ${lc.showSignatureLines?`<div style="display:flex;justify-content:space-between;margin-top:30px"><div style="text-align:center;width:160px"><div style="border-top:1px solid #aaa;padding-top:3px;color:#888;font-size:10px">Authorised Signatory</div><div style="font-size:10px;color:#aaa">${esc(co)}</div></div><div style="text-align:center;width:160px"><div style="border-top:1px solid #aaa;padding-top:3px;color:#888;font-size:10px">Employee Signature</div><div style="font-size:10px;color:#aaa">Date: ______________</div></div></div>`:''}
   <div style="margin-top:18px;text-align:center;color:#aaa;font-size:9px;border-top:1px solid #eee;padding-top:5px">${esc(lc.customFooter)} &nbsp;|&nbsp; ${new Date().toLocaleDateString('en-NA')}</div>
   </div>
