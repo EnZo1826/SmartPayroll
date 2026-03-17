@@ -263,7 +263,7 @@ function switchTab(tab) {
   const [title,sub] = tabTitles[tab];
   document.getElementById('page-title').textContent = title;
   document.getElementById('page-sub').textContent = sub;
-  if(tab==='dashboard') updateDashboard();
+  if(tab==='dashboard') { updateDashboard(); initReportSelectors(); }
   if(tab==='employees') renderEmployees();
   if(tab==='payslips') renderPayslips();
   if(tab==='layout') { loadLayoutEditorForm(); setTimeout(updateLayoutPreview,100); }
@@ -1294,6 +1294,7 @@ function printPayslip(month,year,empId) {
 function updateDashboard() {
   document.getElementById('dash-emp-count').textContent = employees.length;
   document.getElementById('emp-count-badge').textContent = employees.length;
+  initReportSelectors();
   // Latest run stats
   const now = new Date();
   const m=now.getMonth()+1, y=now.getFullYear();
@@ -1320,6 +1321,500 @@ function updateDashboard() {
       <span class="text-sm font-mono text-green-600 dark:text-green-400">${fmt(net)}</span>
     </div>`;
   }).join('');
+}
+
+
+// ============================================================
+// PAYROLL EXPENSE REPORT
+// ============================================================
+
+function initReportSelectors() {
+  const monthSel = document.getElementById('report-month');
+  const yearSel  = document.getElementById('report-year');
+  if (!monthSel || !yearSel) return;
+  // Set current month
+  monthSel.value = new Date().getMonth() + 1;
+  // Populate year dropdown from saved runs + current year
+  const years = [...new Set([
+    ...payrollRuns.map(r => r.year),
+    new Date().getFullYear()
+  ])].sort((a, b) => b - a);
+  yearSel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('');
+}
+
+function loadPayrollReport() {
+  const month = parseInt(document.getElementById('report-month').value);
+  const year  = parseInt(document.getElementById('report-year').value);
+  const run   = payrollRuns.find(r => r.month === month && r.year === year);
+  const container = document.getElementById('report-container');
+  const printBtn  = document.getElementById('btn-print-report');
+
+  if (!run || !run.results || !run.results.length) {
+    container.innerHTML = `<p class="text-sm italic text-slate-400 dark:text-slate-500 text-center py-6">No payroll run found for ${monthName(month)} ${year}.</p>`;
+    printBtn.disabled = true;
+    const xlBtn = document.getElementById('btn-export-excel'); if(xlBtn) xlBtn.disabled = true;
+    return;
+  }
+
+  // Calculate totals
+  let totGross = 0, totNet = 0, totPAYE = 0, totSSC = 0, totOtherDed = 0, totEmpSSC = 0;
+  const rows = run.results.map(r => {
+    const c = r.calc || {};
+    totGross    += c.grossEarnings  || 0;
+    totNet      += c.netPay         || 0;
+    totPAYE     += c.paye           || 0;
+    totSSC      += c.sscEmployee    || 0;
+    totOtherDed += c.otherDeductions|| 0;
+    totEmpSSC   += c.employerSSC    || 0;
+    return r;
+  });
+
+  const period = `${monthName(month)} ${year}`;
+
+  container.innerHTML = `
+    <div class="overflow-x-auto -mx-1">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b-2 border-slate-200 dark:border-slate-600">
+            <th class="text-left px-2 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Employee</th>
+            <th class="text-left px-2 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Position</th>
+            <th class="text-right px-2 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Gross Pay</th>
+            <th class="text-right px-2 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">PAYE</th>
+            <th class="text-right px-2 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">SSC Emp</th>
+            <th class="text-right px-2 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Other Ded</th>
+            <th class="text-right px-2 py-2.5 text-xs font-semibold text-green-700 dark:text-green-400 uppercase tracking-wide">Net Pay</th>
+            <th class="text-right px-2 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Emp SSC</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100 dark:divide-slate-700">
+          ${rows.map(r => {
+            const c = r.calc || {};
+            const otherDed = c.otherDeductions || 0;
+            return `<tr class="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors">
+              <td class="px-2 py-2.5">
+                <div class="font-medium text-slate-900 dark:text-white">${esc(r.name)}</div>
+                <div class="text-xs text-slate-400 font-mono">${esc(r.empId)}</div>
+              </td>
+              <td class="px-2 py-2.5 text-slate-600 dark:text-slate-300">${esc(r.position)}</td>
+              <td class="px-2 py-2.5 text-right font-mono text-slate-900 dark:text-white">${fmt(c.grossEarnings||0)}</td>
+              <td class="px-2 py-2.5 text-right font-mono text-red-600 dark:text-red-400">${fmt(c.paye||0)}</td>
+              <td class="px-2 py-2.5 text-right font-mono text-red-500 dark:text-red-400">${fmt(c.sscEmployee||0)}</td>
+              <td class="px-2 py-2.5 text-right font-mono text-slate-500 dark:text-slate-400">${fmt(otherDed)}</td>
+              <td class="px-2 py-2.5 text-right font-mono font-semibold text-green-600 dark:text-green-400">${fmt(c.netPay||0)}</td>
+              <td class="px-2 py-2.5 text-right font-mono text-slate-400">${fmt(c.employerSSC||0)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+        <tfoot>
+          <tr class="border-t-2 border-slate-300 dark:border-slate-500 bg-slate-50 dark:bg-slate-700/50 font-bold">
+            <td class="px-2 py-3 text-slate-900 dark:text-white" colspan="2">TOTALS — ${period}</td>
+            <td class="px-2 py-3 text-right font-mono text-slate-900 dark:text-white">${fmt(totGross)}</td>
+            <td class="px-2 py-3 text-right font-mono text-red-600 dark:text-red-400">${fmt(totPAYE)}</td>
+            <td class="px-2 py-3 text-right font-mono text-red-500 dark:text-red-400">${fmt(totSSC)}</td>
+            <td class="px-2 py-3 text-right font-mono text-slate-500">${fmt(totOtherDed)}</td>
+            <td class="px-2 py-3 text-right font-mono text-green-600 dark:text-green-400">${fmt(totNet)}</td>
+            <td class="px-2 py-3 text-right font-mono text-slate-400">${fmt(totEmpSSC)}</td>
+          </tr>
+          <tr class="bg-slate-100 dark:bg-slate-700 text-xs text-slate-500 dark:text-slate-400">
+            <td class="px-2 py-2" colspan="2">Total Employer Cost (Gross + Employer SSC)</td>
+            <td class="px-2 py-2 text-right font-mono font-semibold text-slate-700 dark:text-slate-200" colspan="6">${fmt(totGross + totEmpSSC)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>`;
+
+  printBtn.disabled = false;
+  const excelBtn = document.getElementById('btn-export-excel');
+  if(excelBtn) excelBtn.disabled = false;
+  // Store reference for print function
+  window._reportData = { run, period, totGross, totNet, totPAYE, totSSC, totOtherDed, totEmpSSC, rows };
+}
+
+
+function exportPayrollReportExcel() {
+  const d = window._reportData;
+  if (!d) return;
+  const { run, period, totGross, totNet, totPAYE, totSSC, totOtherDed, totEmpSSC, rows } = d;
+
+  const co      = settings.companyName || 'Your Company Pty Ltd';
+  const coReg   = settings.companyReg  || '';
+  const coAddr  = settings.companyAddr || '';
+  const coTax   = settings.companyTax  || '';
+  const printed = new Date().toLocaleDateString('en-NA', { day:'2-digit', month:'short', year:'numeric' });
+  const primaryHex = (layoutConfig.primaryColor || '#003DA6').replace('#','');
+
+  const wb = XLSX.utils.book_new();
+  const ws = {};
+  const merge = [];
+
+  // ── Helper: set cell with style ──────────────────────────────────────────
+  function C(r, c, v, s) {
+    const ref = XLSX.utils.encode_cell({ r, c });
+    ws[ref] = { v, t: typeof v === 'number' ? 'n' : 's', s: s || {} };
+  }
+  function Cn(r, c, v, s) { // number cell
+    const ref = XLSX.utils.encode_cell({ r, c });
+    ws[ref] = { v, t: 'n', z: '#,##0.00', s: s || {} };
+  }
+
+  // Styles
+  const HEADER_FILL  = { fgColor: { rgb: primaryHex } };
+  const HEADER_FONT  = { bold: true, color: { rgb: 'FFFFFF' }, name: 'Arial', sz: 11 };
+  const TITLE_FONT   = { bold: true, color: { rgb: 'FFFFFF' }, name: 'Arial', sz: 16 };
+  const SUBHDR_FILL  = { fgColor: { rgb: 'E2E8F0' } };
+  const SUBHDR_FONT  = { bold: true, name: 'Arial', sz: 9, color: { rgb: '334155' } };
+  const TOTALS_FILL  = { fgColor: { rgb: '1E293B' } };
+  const TOTALS_FONT  = { bold: true, color: { rgb: 'FFFFFF' }, name: 'Arial', sz: 10 };
+  const EMP_ROW_FILL = { fgColor: { rgb: 'F0F9FF' } };
+  const EMP_ROW_FONT = { italic: true, color: { rgb: '0369A1' }, name: 'Arial', sz: 9 };
+  const SUMBOX_FILL  = { fgColor: { rgb: 'F8FAFC' } };
+  const META_FONT    = { name: 'Arial', sz: 9, color: { rgb: '64748B' } };
+  const BOLD         = { bold: true, name: 'Arial', sz: 10 };
+  const NORMAL       = { name: 'Arial', sz: 9.5 };
+  const RED_FONT     = { name: 'Arial', sz: 9.5, color: { rgb: 'DC2626' } };
+  const GREEN_FONT   = { bold: true, name: 'Arial', sz: 9.5, color: { rgb: '16A34A' } };
+  const MUTED_FONT   = { name: 'Arial', sz: 9.5, color: { rgb: '94A3B8' } };
+  const BORDER_THIN  = { style: 'thin', color: { rgb: 'E2E8F0' } };
+  const BORDERS      = { top: BORDER_THIN, bottom: BORDER_THIN, left: BORDER_THIN, right: BORDER_THIN };
+  const ALIGN_R      = { horizontal: 'right' };
+  const ALIGN_C      = { horizontal: 'center' };
+  const ALIGN_L      = { horizontal: 'left' };
+
+  let row = 0;
+
+  // ── Row 0–1: Company header banner ───────────────────────────────────────
+  C(row, 0, co,     { font: { bold: true, name:'Arial', sz:14, color:{rgb:'FFFFFF'} }, fill: HEADER_FILL, alignment: ALIGN_L });
+  C(row, 1, '',     { fill: HEADER_FILL });
+  C(row, 2, '',     { fill: HEADER_FILL });
+  C(row, 3, '',     { fill: HEADER_FILL });
+  C(row, 4, '',     { fill: HEADER_FILL });
+  C(row, 5, '',     { fill: HEADER_FILL });
+  C(row, 6, '',     { fill: HEADER_FILL });
+  C(row, 7, '',     { fill: HEADER_FILL });
+  C(row, 8, 'PAYROLL REPORT', { font: TITLE_FONT, fill: HEADER_FILL, alignment: ALIGN_R });
+  merge.push({ s: { r: row, c: 0 }, e: { r: row, c: 7 } });
+  row++;
+
+  C(row, 0, [coReg, coAddr].filter(Boolean).join('  |  ') || ' ',
+    { font: { name:'Arial', sz:9, color:{rgb:'CBD5E1'} }, fill: HEADER_FILL, alignment: ALIGN_L });
+  C(row, 1, '', { fill: HEADER_FILL }); C(row, 2, '', { fill: HEADER_FILL });
+  C(row, 3, '', { fill: HEADER_FILL }); C(row, 4, '', { fill: HEADER_FILL });
+  C(row, 5, '', { fill: HEADER_FILL }); C(row, 6, '', { fill: HEADER_FILL }); C(row, 7, '', { fill: HEADER_FILL });
+  C(row, 8, period, { font: { name:'Arial', sz:10, color:{rgb:'CBD5E1'} }, fill: HEADER_FILL, alignment: ALIGN_R });
+  merge.push({ s: { r: row, c: 0 }, e: { r: row, c: 7 } });
+  row++;
+
+  // ── Row 2: Meta bar ───────────────────────────────────────────────────────
+  C(row, 0, `Period: ${period}`,               { font: META_FONT, fill: SUMBOX_FILL, alignment: ALIGN_L });
+  C(row, 2, `Employees: ${rows.length}`,       { font: META_FONT, fill: SUMBOX_FILL, alignment: ALIGN_C });
+  C(row, 4, `Printed: ${printed}`,             { font: META_FONT, fill: SUMBOX_FILL, alignment: ALIGN_C });
+  C(row, 6, coTax ? `Tax No: ${coTax}` : ' ',  { font: META_FONT, fill: SUMBOX_FILL, alignment: ALIGN_R });
+  [1,3,5,7,8].forEach(c => C(row, c, '', { fill: SUMBOX_FILL }));
+  merge.push({ s:{r:row,c:0}, e:{r:row,c:1} });
+  merge.push({ s:{r:row,c:2}, e:{r:row,c:3} });
+  merge.push({ s:{r:row,c:4}, e:{r:row,c:5} });
+  merge.push({ s:{r:row,c:6}, e:{r:row,c:8} });
+  row++;
+
+  // ── Row 3: Blank spacer ───────────────────────────────────────────────────
+  row++;
+
+  // ── Rows 4–5: Summary boxes (2 per row) ──────────────────────────────────
+  const summaryBoxStyle = (val, color) => ({
+    font: { bold:true, name:'Arial', sz:12, color:{ rgb: color } },
+    fill: { fgColor: { rgb: 'FFFFFF' } },
+    alignment: ALIGN_C,
+    border: BORDERS
+  });
+  const summaryLabelStyle = { font: { name:'Arial', sz:8, color:{rgb:'64748B'} }, fill:{fgColor:{rgb:'FFFFFF'}}, alignment: ALIGN_C, border: BORDERS };
+
+  // Box 1: Gross — cols 0-1  Box 2: Net Pay — cols 2-3  Box 3: PAYE — cols 4-5  Box 4: SSC — cols 6-7  (col 8 spare)
+  const boxes = [
+    { label: 'Total Gross Payroll', val: totGross, color: '1E293B' },
+    { label: 'Total Net Pay',       val: totNet,   color: '16A34A' },
+    { label: 'Total PAYE (NamRA)',   val: totPAYE,  color: 'DC2626' },
+    { label: 'Total SSC (Emp)',      val: totSSC,   color: 'DC2626' },
+  ];
+  boxes.forEach((b, i) => {
+    const sc = i * 2;
+    C(row,   sc,   b.label,           summaryLabelStyle);
+    C(row,   sc+1, '',                summaryLabelStyle);
+    Cn(row+1, sc,  b.val,             summaryBoxStyle(b.val, b.color));
+    C(row+1,  sc+1,'',               summaryBoxStyle(b.val, b.color));
+    merge.push({ s:{r:row,c:sc},   e:{r:row,c:sc+1} });
+    merge.push({ s:{r:row+1,c:sc}, e:{r:row+1,c:sc+1} });
+  });
+  // col 8 blank
+  C(row, 8, '', {});  C(row+1, 8, '', {});
+  row += 2;
+
+  // ── Row 7: Blank spacer ───────────────────────────────────────────────────
+  row++;
+
+  // ── Row 8: Column headers ─────────────────────────────────────────────────
+  const headers = ['Emp ID', 'Name', 'Position', 'Gross Pay', 'PAYE', 'SSC Emp', 'Other Ded.', 'Net Pay', 'Emp SSC'];
+  headers.forEach((h, c) => {
+    C(row, c, h, { font: SUBHDR_FONT, fill: { fgColor:{rgb: primaryHex} }, alignment: c > 2 ? ALIGN_R : ALIGN_L,
+      border: BORDERS, font: { bold:true, name:'Arial', sz:9, color:{rgb:'FFFFFF'} } });
+  });
+  row++;
+
+  // ── Data rows ─────────────────────────────────────────────────────────────
+  const firstDataRow = row;
+  rows.forEach((r_, i) => {
+    const c_ = r_.calc || {};
+    const even = i % 2 === 1;
+    const rowFill = even ? { fgColor:{rgb:'F8FAFC'} } : { fgColor:{rgb:'FFFFFF'} };
+    const base = { fill: rowFill, border: BORDERS };
+    C( row, 0, r_.empId    || '', { ...base, font: { ...NORMAL, color:{rgb:'64748B'} }, alignment: ALIGN_L });
+    C( row, 1, r_.name     || '', { ...base, font: BOLD,   alignment: ALIGN_L });
+    C( row, 2, r_.position || '', { ...base, font: NORMAL, alignment: ALIGN_L });
+    Cn(row, 3, c_.grossEarnings   || 0, { ...base, font: NORMAL,     alignment: ALIGN_R });
+    Cn(row, 4, c_.paye            || 0, { ...base, font: RED_FONT,   alignment: ALIGN_R });
+    Cn(row, 5, c_.sscEmployee     || 0, { ...base, font: RED_FONT,   alignment: ALIGN_R });
+    Cn(row, 6, c_.otherDeductions || 0, { ...base, font: NORMAL,     alignment: ALIGN_R });
+    Cn(row, 7, c_.netPay          || 0, { ...base, font: GREEN_FONT, alignment: ALIGN_R });
+    Cn(row, 8, c_.employerSSC     || 0, { ...base, font: MUTED_FONT, alignment: ALIGN_R });
+    row++;
+  });
+  const lastDataRow = row - 1;
+
+  // ── Totals row ─────────────────────────────────────────────────────────────
+  const tf = { fill: TOTALS_FILL, border: BORDERS };
+  C( row, 0, 'TOTALS', { ...tf, font: TOTALS_FONT, alignment: ALIGN_L });
+  C( row, 1, '',        { ...tf });
+  C( row, 2, '',        { ...tf });
+  merge.push({ s:{r:row,c:0}, e:{r:row,c:2} });
+
+  const totCols = [3, 4, 5, 6, 7, 8];
+  const totColors = ['FFFFFF', 'FCA5A5', 'FCA5A5', 'FFFFFF', '86EFAC', 'CBD5E1'];
+  const excelFirstData = firstDataRow + 1; // 1-indexed
+  const excelLastData  = lastDataRow  + 1;
+  totCols.forEach((c, i) => {
+    const colLetter = XLSX.utils.encode_col(c);
+    ws[XLSX.utils.encode_cell({r: row, c})] = {
+      f: `SUM(${colLetter}${excelFirstData}:${colLetter}${excelLastData})`,
+      t: 'n', z: '#,##0.00',
+      s: { ...tf, font: { bold:true, name:'Arial', sz:10, color:{rgb: totColors[i]} }, alignment: ALIGN_R }
+    };
+  });
+  row++;
+
+  // ── Employer cost row ──────────────────────────────────────────────────────
+  const ecFill = { fgColor:{rgb:'E0F2FE'} };
+  C( row, 0, 'Total Employer Cost (Gross Pay + Employer SSC)',
+    { fill: ecFill, font: { italic:true, name:'Arial', sz:9, color:{rgb:'0369A1'} }, border: BORDERS, alignment: ALIGN_L });
+  [1,2,3,4,5,6,7].forEach(c => C(row, c, '', { fill: ecFill, border: BORDERS }));
+  merge.push({ s:{r:row,c:0}, e:{r:row,c:7} });
+  const grossCol   = XLSX.utils.encode_col(3);
+  const empSscCol  = XLSX.utils.encode_col(8);
+  const totalsExcelRow = row; // 0-indexed; formula row is row+1 (1-indexed)
+  ws[XLSX.utils.encode_cell({r:row, c:8})] = {
+    f: `${grossCol}${row}+${empSscCol}${row}`,  // totals row
+    t: 'n', z: '#,##0.00',
+    s: { fill: ecFill, font: { bold:true, name:'Arial', sz:9, color:{rgb:'0369A1'} }, border: BORDERS, alignment: ALIGN_R }
+  };
+  // Actually reference the totals row cells
+  const totalsRowExcel = row; // 0-based
+  ws[XLSX.utils.encode_cell({r:row, c:8})] = {
+    f: `SUM(${grossCol}${totalsRowExcel}:${grossCol}${totalsRowExcel})+SUM(${empSscCol}${totalsRowExcel}:${empSscCol}${totalsRowExcel})`,
+    t: 'n', z: '#,##0.00',
+    s: { fill: ecFill, font: { bold:true, name:'Arial', sz:9, color:{rgb:'0369A1'} }, border: BORDERS, alignment: ALIGN_R }
+  };
+  // Use direct values instead for reliability
+  Cn(row, 8, totGross + totEmpSSC, { fill: ecFill, font: { bold:true, name:'Arial', sz:9, color:{rgb:'0369A1'} }, border: BORDERS, alignment: ALIGN_R });
+  row++;
+
+  // ── Row: blank then footer ─────────────────────────────────────────────────
+  row++;
+  C(row, 0, `${co} — Namibian Payroll System  |  ${printed}  |  CONFIDENTIAL`,
+    { font: { name:'Arial', sz:8, color:{rgb:'94A3B8'}, italic:true }, alignment: ALIGN_L });
+  merge.push({ s:{r:row,c:0}, e:{r:row,c:8} });
+
+  // ── Sheet range & merges ───────────────────────────────────────────────────
+  ws['!ref'] = XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:row,c:8} });
+  ws['!merges'] = merge;
+  ws['!cols'] = [
+    { wch: 10 },  // Emp ID
+    { wch: 24 },  // Name
+    { wch: 20 },  // Position
+    { wch: 15 },  // Gross
+    { wch: 13 },  // PAYE
+    { wch: 13 },  // SSC
+    { wch: 13 },  // Other
+    { wch: 15 },  // Net
+    { wch: 14 },  // Emp SSC
+  ];
+  ws['!rows'] = [];
+  ws['!rows'][0] = { hpt: 24 }; // header row height
+  ws['!rows'][1] = { hpt: 16 };
+  ws['!rows'][firstDataRow - 1] = { hpt: 20 }; // column header row
+
+  // ── Add sheet & export ─────────────────────────────────────────────────────
+  const sheetName = `${monthName(run.month)} ${run.year}`;
+  XLSX.utils.book_append_sheet(wb, ws, sheetName.replace(/[:\\/?*\[\]]/g, '-'));
+
+  const filename = `PayrollReport_${run.year}${String(run.month).padStart(2,'0')}_${(co).replace(/[^a-z0-9]/gi,'_')}.xlsx`;
+  XLSX.writeFile(wb, filename);
+  toast(`Excel report exported — ${filename}`, 'green');
+}
+
+function printPayrollReport() {
+  const d = window._reportData;
+  if (!d) return;
+  const { run, period, totGross, totNet, totPAYE, totSSC, totOtherDed, totEmpSSC, rows } = d;
+  const co      = settings.companyName || 'Your Company Pty Ltd';
+  const coReg   = settings.companyReg  || '';
+  const coAddr  = settings.companyAddr || '';
+  const logoHtml = (_logoCache && layoutConfig.logoType === 'image')
+    ? `<img src="${_logoCache}" style="height:40px;width:auto;object-fit:contain;margin-right:10px;flex-shrink:0"/>`
+    : (layoutConfig.logoType === 'text' && layoutConfig.logoText
+        ? `<div style="width:40px;height:40px;border-radius:6px;background:${layoutConfig.primaryColor};color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:900;font-size:14px;margin-right:10px;flex-shrink:0">${esc(layoutConfig.logoText)}</div>`
+        : '');
+  const p = layoutConfig.primaryColor || '#003DA6';
+  const printed = new Date().toLocaleDateString('en-NA', { day:'2-digit', month:'short', year:'numeric' });
+
+  const rowsHtml = rows.map(r => {
+    const c = r.calc || {};
+    return `<tr>
+      <td>${esc(r.empId)}</td>
+      <td>${esc(r.name)}</td>
+      <td>${esc(r.position)}</td>
+      <td class="num">${fmtN(c.grossEarnings||0)}</td>
+      <td class="num red">${fmtN(c.paye||0)}</td>
+      <td class="num red">${fmtN(c.sscEmployee||0)}</td>
+      <td class="num">${fmtN(c.otherDeductions||0)}</td>
+      <td class="num green"><strong>${fmtN(c.netPay||0)}</strong></td>
+      <td class="num muted">${fmtN(c.employerSSC||0)}</td>
+    </tr>`;
+  }).join('');
+
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html><head>
+    <title>Payroll Expense Report — ${period}</title>
+    <style>
+      *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;box-sizing:border-box;margin:0;padding:0}
+      body{font-family:'Arial',sans-serif;font-size:10px;color:#1e293b}
+      .header{background:${p};color:#fff;padding:14px 18px;display:flex;justify-content:space-between;align-items:center}
+      .header-left{display:flex;align-items:center}
+      .co-name{font-size:16px;font-weight:bold}
+      .co-sub{font-size:8px;opacity:.8;margin-top:2px}
+      .report-title{text-align:right}
+      .report-title .title{font-size:18px;font-weight:bold;letter-spacing:2px}
+      .report-title .sub{font-size:10px;opacity:.8;margin-top:2px}
+      .meta{display:flex;justify-content:space-between;padding:8px 18px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-size:9px;color:#64748b}
+      table{width:100%;border-collapse:collapse;margin:0}
+      th{background:${p};color:#fff;text-align:left;padding:6px 8px;font-size:8.5px;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap}
+      th.num{text-align:right}
+      td{padding:5px 8px;border-bottom:1px solid #f1f5f9;vertical-align:middle;white-space:nowrap}
+      td.num{text-align:right;font-family:'Courier New',monospace;font-size:9.5px}
+      td.red{color:#dc2626}
+      td.green{color:#16a34a}
+      td.muted{color:#94a3b8}
+      tr:nth-child(even) td{background:#f8fafc}
+      tr:hover td{background:#eff6ff}
+      .totals-row td{background:#1e293b!important;color:#fff!important;font-weight:bold;font-size:10px;padding:7px 8px;border-top:2px solid ${p}}
+      .totals-row td.num{color:#fff!important}
+      .totals-row td.green{color:#86efac!important}
+      .totals-row td.red{color:#fca5a5!important}
+      .employer-row td{background:#f0f9ff!important;color:#0369a1!important;font-size:9px;font-style:italic}
+      .summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:12px 18px;background:#f8fafc;border-top:1px solid #e2e8f0}
+      .summary-box{border:1px solid #e2e8f0;border-radius:6px;padding:8px 10px;background:#fff}
+      .summary-box .label{font-size:7.5px;text-transform:uppercase;letter-spacing:.4px;color:#64748b;margin-bottom:3px}
+      .summary-box .value{font-size:13px;font-weight:bold;color:#1e293b}
+      .summary-box .value.green{color:#16a34a}
+      .summary-box .value.red{color:#dc2626}
+      .footer{text-align:center;padding:8px;font-size:8px;color:#94a3b8;border-top:1px solid #f1f5f9;margin-top:6px}
+      .no-print{display:none}
+      @media print{@page{margin:8mm}.no-print{display:none}}
+    </style>
+  </head><body>
+    <!-- Header -->
+    <div class="header">
+      <div class="header-left">
+        ${logoHtml}
+        <div>
+          <div class="co-name">${esc(co)}</div>
+          ${coReg ? `<div class="co-sub">${esc(coReg)}</div>` : ''}
+          ${coAddr ? `<div class="co-sub">${esc(coAddr)}</div>` : ''}
+        </div>
+      </div>
+      <div class="report-title">
+        <div class="title">PAYROLL REPORT</div>
+        <div class="sub">${period}</div>
+      </div>
+    </div>
+
+    <!-- Meta bar -->
+    <div class="meta">
+      <span>Period: <strong>${period}</strong></span>
+      <span>Employees: <strong>${rows.length}</strong></span>
+      <span>Printed: <strong>${printed}</strong></span>
+      ${settings.companyTax ? `<span>Tax No: <strong>${esc(settings.companyTax)}</strong></span>` : ''}
+    </div>
+
+    <!-- Summary boxes -->
+    <div class="summary">
+      <div class="summary-box">
+        <div class="label">Total Gross Payroll</div>
+        <div class="value">${fmtN(totGross)}</div>
+      </div>
+      <div class="summary-box">
+        <div class="label">Total Net Pay</div>
+        <div class="value green">${fmtN(totNet)}</div>
+      </div>
+      <div class="summary-box">
+        <div class="label">Total PAYE (NamRA)</div>
+        <div class="value red">${fmtN(totPAYE)}</div>
+      </div>
+      <div class="summary-box">
+        <div class="label">Total SSC (Employee)</div>
+        <div class="value red">${fmtN(totSSC)}</div>
+      </div>
+    </div>
+
+    <!-- Detail table -->
+    <table>
+      <thead>
+        <tr>
+          <th>Emp ID</th>
+          <th>Name</th>
+          <th>Position</th>
+          <th class="num">Gross Pay</th>
+          <th class="num">PAYE</th>
+          <th class="num">SSC Emp</th>
+          <th class="num">Other Ded.</th>
+          <th class="num">Net Pay</th>
+          <th class="num">Emp SSC</th>
+        </tr>
+      </thead>
+      <tbody>${rowsHtml}</tbody>
+      <tfoot>
+        <tr class="totals-row">
+          <td colspan="3">TOTALS</td>
+          <td class="num">${fmtN(totGross)}</td>
+          <td class="num red">${fmtN(totPAYE)}</td>
+          <td class="num red">${fmtN(totSSC)}</td>
+          <td class="num">${fmtN(totOtherDed)}</td>
+          <td class="num green"><strong>${fmtN(totNet)}</strong></td>
+          <td class="num muted">${fmtN(totEmpSSC)}</td>
+        </tr>
+        <tr class="employer-row">
+          <td colspan="8">Total Employer Cost (Gross Pay + Employer SSC Contribution)</td>
+          <td class="num"><strong>${fmtN(totGross + totEmpSSC)}</strong></td>
+        </tr>
+      </tfoot>
+    </table>
+
+    <div class="footer">${esc(settings.companyName || 'SmartPayroll')} — Namibian Payroll System &nbsp;|&nbsp; ${printed} &nbsp;|&nbsp; CONFIDENTIAL</div>
+
+    <div class="no-print" style="text-align:center;padding:16px">
+      <button onclick="window.print()" style="background:${p};color:#fff;border:none;padding:9px 26px;border-radius:7px;cursor:pointer;font-size:13px;font-weight:bold;margin-right:8px">Print Report</button>
+      <button onclick="window.close()" style="background:#e2e8f0;color:#334155;border:none;padding:9px 26px;border-radius:7px;cursor:pointer;font-size:13px">Close</button>
+    </div>
+  </body></html>`);
+  win.document.close();
+  setTimeout(() => win.print(), 500);
 }
 
 // ============================================================

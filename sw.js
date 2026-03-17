@@ -2,7 +2,7 @@
  * SmartPayroll Service Worker
  * Caches all app assets for full offline operation.
  */
-const CACHE_NAME = 'smartpayroll-v1.5.3';
+const CACHE_NAME = 'smartpayroll-v1.5.8';
 const STATIC_ASSETS = [
   './',
   './index.html',
