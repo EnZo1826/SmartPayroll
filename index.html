@@ -678,6 +678,25 @@
             </button>
           </div>
 
+          <!-- ══ APP CACHE ══ -->
+          <div class="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="w-9 h-9 rounded-lg bg-sky-100 dark:bg-sky-900/40 flex items-center justify-center flex-shrink-0">
+                <svg class="w-4 h-4 text-sky-600 dark:text-sky-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+              </div>
+              <div>
+                <h3 class="font-semibold text-slate-900 dark:text-white">App Cache</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Force the app to reload fresh files from the server</p>
+              </div>
+            </div>
+            <p class="text-sm text-slate-600 dark:text-slate-300 mb-1">Use this after a new version is deployed. Clears the service worker cache and reloads the app — <strong>your data is not affected</strong>.</p>
+            <p class="text-xs text-slate-400 dark:text-slate-500 mb-4" id="sw-cache-status">Checking cache status…</p>
+            <button onclick="clearAppCache()" id="btn-clear-cache" class="inline-flex items-center gap-2 bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+              Clear Cache &amp; Reload
+            </button>
+          </div>
+
           <!-- ══ DANGER ZONE ══ -->
           <div class="bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-200 dark:border-red-800 p-6">
             <h3 class="font-semibold text-red-700 dark:text-red-400 mb-2">Danger Zone</h3>

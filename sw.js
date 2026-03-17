@@ -2,7 +2,7 @@
  * SmartPayroll Service Worker
  * Caches all app assets for full offline operation.
  */
-const CACHE_NAME = 'smartpayroll-v1.1.0';
+const CACHE_NAME = 'smartpayroll-v1.5.3';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -44,6 +44,9 @@ self.addEventListener('fetch', event => {
   const { request } = event;
   const url = new URL(request.url);
 
+  // Only handle http/https — skip chrome-extension://, data:, blob:, etc.
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+
   // Skip non-GET
   if (request.method !== 'GET') return;
 
@@ -53,12 +56,14 @@ self.addEventListener('fetch', event => {
       if (cached) return cached;
 
       return fetch(request).then(response => {
-        // Only cache valid responses
+        // Only cache valid same-origin or CORS responses
         if (!response || response.status !== 200 || response.type === 'error') {
           return response;
         }
+        // Guard: never cache non-http(s) URLs (belt-and-suspenders)
+        if (!request.url.startsWith('http')) return response;
         const clone = response.clone();
-        caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
+        caches.open(CACHE_NAME).then(cache => cache.put(request, clone)).catch(() => {});
         return response;
       }).catch(() => {
         // Offline fallback to index.html
@@ -70,9 +75,20 @@ self.addEventListener('fetch', event => {
   );
 });
 
-// Background sync for future online-first features
-self.addEventListener('message', event => {
-  if (event.data && event.data.type === 'SKIP_WAITING') {
+// Message handler — supports SKIP_WAITING and CLEAR_CACHE from the app
+self.addEventListener('message', async event => {
+  if (!event.data) return;
+
+  if (event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
+  }
+
+  if (event.data.type === 'CLEAR_CACHE') {
+    const keys = await caches.keys();
+    await Promise.all(keys.map(k => caches.delete(k)));
+    self.skipWaiting();
+    // Notify all clients that cache is cleared
+    const clients = await self.clients.matchAll();
+    clients.forEach(c => c.postMessage({ type: 'CACHE_CLEARED' }));
   }
 });

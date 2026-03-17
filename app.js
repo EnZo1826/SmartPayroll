@@ -117,18 +117,132 @@ function taxYearLabel(runMonth, runYear) {
   return `${monthName(startMonth)} ${startYear} – ${monthName(endMonth)} ${endYear}`;
 }
 
+// Module-level logo cache — always current, set on upload and on page load.
+// This is the single source of truth for payslip generation.
+let _logoCache = '';
+
+// ============================================================
+// LOGO STORAGE — IndexedDB (no quota issues, designed for binary data)
+// ============================================================
+const _logoDB = (() => {
+  let _db = null;
+  function open() {
+    return new Promise((resolve, reject) => {
+      if (_db) return resolve(_db);
+      const req = indexedDB.open('smartpayroll_assets', 1);
+      req.onupgradeneeded = e => e.target.result.createObjectStore('logo');
+      req.onsuccess = e => { _db = e.target.result; resolve(_db); };
+      req.onerror = () => reject(req.error);
+    });
+  }
+  return {
+    async save(data) {
+      const db = await open();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction('logo', 'readwrite');
+        tx.objectStore('logo').put(data, 'company_logo');
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    },
+    async load() {
+      const db = await open();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction('logo', 'readonly');
+        const req = tx.objectStore('logo').get('company_logo');
+        req.onsuccess = () => resolve(req.result || '');
+        req.onerror = () => reject(req.error);
+      });
+    },
+    async clear() {
+      const db = await open();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction('logo', 'readwrite');
+        tx.objectStore('logo').delete('company_logo');
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+  };
+})();
+
+// Compress a logo data URL via canvas and save to IndexedDB + _logoCache
+function compressAndCacheLogo(dataUrl) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = async () => {
+      const MAX_W = 400, MAX_H = 160;
+      let w = img.width, h = img.height;
+      if (w > MAX_W || h > MAX_H) {
+        const ratio = Math.min(MAX_W / w, MAX_H / h);
+        w = Math.round(w * ratio); h = Math.round(h * ratio);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      // No background fill — preserves PNG transparency
+      ctx.drawImage(img, 0, 0, w, h);
+      const compressed = canvas.toDataURL('image/png', 1.0);
+      _logoCache = compressed;
+      layoutConfig.logoData = compressed;
+      try { await _logoDB.save(compressed); } catch(e) { console.warn('IDB logo save failed:', e); }
+      saveLayoutData();
+      // Refresh thumbnail in layout editor if open
+      const thumb = document.getElementById('logo-thumb-img');
+      const preview = document.getElementById('logo-preview-thumb');
+      if (thumb) { thumb.src = compressed; if (preview) preview.classList.remove('hidden'); }
+      resolve();
+    };
+    img.onerror = () => { resolve(); }; // fail silently
+    img.src = dataUrl;
+  });
+}
+
+// Load logo from IndexedDB into layoutConfig on startup
+async function warmLogo() {
+  try {
+    const data = await _logoDB.load();
+    if (data) {
+      _logoCache = data;                              // populate module cache
+      layoutConfig.logoData = data;
+      layoutConfig.logoType = layoutConfig.logoType || 'image';
+      // Refresh thumbnail if layout editor is already open
+      const thumb = document.getElementById('logo-thumb-img');
+      const preview = document.getElementById('logo-preview-thumb');
+      if (thumb && preview) { thumb.src = data; preview.classList.remove('hidden'); }
+    }
+  } catch(e) { console.warn('warmLogo failed:', e); }
+}
+
 
 function load() {
   employees = JSON.parse(localStorage.getItem('smartpayroll_employees') || '[]');
   payrollRuns = JSON.parse(localStorage.getItem('smartpayroll_runs') || '[]');
   settings = JSON.parse(localStorage.getItem('smartpayroll_settings') || '{}');
   const savedLayout = localStorage.getItem('smartpayroll_layout');
-  if(savedLayout) { try { layoutConfig = {...layoutConfig, ...JSON.parse(savedLayout)}; } catch(e){} }
+  if(savedLayout) {
+    try {
+      const parsed = JSON.parse(savedLayout);
+      // Logo is stored in IndexedDB — warmLogo() handles rehydration after load()
+      parsed.logoData = '';
+      layoutConfig = { ...layoutConfig, ...parsed };
+    } catch(e) { console.error('Failed to load layout config:', e); }
+  }
 }
 function saveEmployees() { localStorage.setItem('smartpayroll_employees', JSON.stringify(employees)); }
 function saveRuns() { localStorage.setItem('smartpayroll_runs', JSON.stringify(payrollRuns)); }
 function saveSettingsData() { localStorage.setItem('smartpayroll_settings', JSON.stringify(settings)); }
-function saveLayoutData() { localStorage.setItem('smartpayroll_layout', JSON.stringify(layoutConfig)); }
+function saveLayoutData() {
+  // Logo is stored in IndexedDB — never in localStorage
+  // Strip it from the layout JSON to keep the localStorage key tiny
+  try {
+    const toStore = { ...layoutConfig, logoData: '' };
+    localStorage.setItem('smartpayroll_layout', JSON.stringify(toStore));
+  } catch(e) {
+    toast('Layout save failed — storage full. Clear old payroll runs in Settings.', 'red');
+    console.error('saveLayoutData failed:', e);
+  }
+}
 
 // ============================================================
 // NAVIGATION
@@ -153,7 +267,7 @@ function switchTab(tab) {
   if(tab==='employees') renderEmployees();
   if(tab==='payslips') renderPayslips();
   if(tab==='layout') { loadLayoutEditorForm(); setTimeout(updateLayoutPreview,100); }
-  if(tab==='settings') loadSettingsForm();
+  if(tab==='settings') { loadSettingsForm(); updateCacheStatusDisplay(); }
 }
 
 // ============================================================
@@ -761,28 +875,37 @@ function generatePDF(month, year, empId) {
   if(!run) return;
   const empData = (run.results||[]).find(r=>r.id===empId);
   if(!empData) return;
-  // Merge current employee record so leave fields (and any future fields) are always fresh
   const liveEmp = employees.find(e=>e.id===empId);
-  buildPayslipPDF(Object.assign({}, empData, liveEmp ? { leaveBalance: liveEmp.leaveBalance, leaveTaken: liveEmp.leaveTaken, hourlyRate: liveEmp.hourlyRate, payType: liveEmp.payType } : {}), run);
+  const enriched = Object.assign({}, empData, liveEmp ? { leaveBalance: liveEmp.leaveBalance, leaveTaken: liveEmp.leaveTaken, hourlyRate: liveEmp.hourlyRate, payType: liveEmp.payType } : {});
+  buildPayslipPDF(enriched, resolveLayout(), run);
 }
 
 function generateBatchPDF(month, year) {
   const run = payrollRuns.find(r=>r.month==month&&r.year==year);
   if(!run||!run.results.length) return;
   toast('Generating batch PDFs...','blue');
+  const lc = resolveLayout(); // resolve once — synchronous, uses _logoCache
   run.results.forEach((empData,i)=>{
     const liveEmp = employees.find(e=>e.id===empData.id);
     const enriched = Object.assign({}, empData, liveEmp ? { leaveBalance: liveEmp.leaveBalance, leaveTaken: liveEmp.leaveTaken, hourlyRate: liveEmp.hourlyRate, payType: liveEmp.payType } : {});
-    setTimeout(()=>buildPayslipPDF(enriched, run), i*300);
+    setTimeout(()=>buildPayslipPDF(enriched, lc, run), i*300);
   });
 }
 
-function buildPayslipPDF(empData, run) {
+// Return a fully resolved copy of layoutConfig.
+// _logoCache is set synchronously on upload and by warmLogo() on page load.
+function resolveLayout() {
+  const lc = Object.assign({}, layoutConfig);
+  if (_logoCache) lc.logoData = _logoCache;
+  return lc;
+}
+
+function buildPayslipPDF(empData, lc, run) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
   const w=210, margin=15;
   const c = empData.calc;
-  const lc = layoutConfig; // Use saved layout config
+  // lc is passed in already resolved (with logo from IndexedDB) by the caller
   const period = `${monthName(run.month)} ${run.year}`;
   const co = settings.companyName||'Your Company Pty Ltd';
   const coReg = settings.companyReg||'';
@@ -824,33 +947,67 @@ function buildPayslipPDF(empData, run) {
       const lt=lc.logoText.slice(0,3); doc.text(lt,logoX+6-doc.getTextWidth(lt)/2,startY+11);
       logoX+=16;
     } else if(lc.logoType==='image' && lc.logoData) {
-      try { doc.addImage(lc.logoData,'PNG',logoX,startY+2,14,14); logoX+=18; } catch(e){}
+      try { const _imgFmt = (lc.logoData.startsWith('data:image/jpeg')||lc.logoData.startsWith('data:image/jpg')) ? 'JPEG' : 'PNG'; doc.addImage(lc.logoData, _imgFmt, logoX, startY+2, 14, 14); logoX+=18; } catch(e){ console.warn('PDF logo render failed:', e); }
     }
-    lx(startY+8,co,logoX,13,'bold',[255,255,255]);
-    lx(startY+14,coAddr,logoX,7,'normal',[200,215,240]);
+    lx(startY+7,co,logoX,12,'bold',[255,255,255]);
+    const coSubLine = [coReg, coAddr].filter(Boolean).join('  |  ');
+    if(coSubLine) lx(startY+13,coSubLine,logoX,6.5,'normal',[200,215,240]);
     doc.setFontSize(16);doc.setFont(pFont,'bold');doc.setTextColor(255,255,255);
-    const titleW=doc.getTextWidth(lc.payslipTitle);doc.text(lc.payslipTitle,w-margin-titleW,startY+10);
-    lx(startY+15,period,w-margin-doc.getTextWidth(period),8,'normal',[200,215,240]);
+    const titleW=doc.getTextWidth(lc.payslipTitle);doc.text(lc.payslipTitle,w-margin-titleW,startY+9);
+    lx(startY+15,period,w-margin-doc.getTextWidth(period),7.5,'normal',[200,215,240]);
     startY+=22;
   } else if(lc.headerStyle==='centered') {
     doc.setFillColor(...pc); doc.rect(0,startY,w,22,'F');
-    lx(startY+8,co,w/2,13,'bold',[255,255,255]); doc.setFontSize(13); const cw=doc.getTextWidth(co); doc.text(co,w/2-cw/2,startY+9);
-    doc.setFontSize(18);doc.setFont(pFont,'bold');doc.setTextColor(255,255,255);const ptw=doc.getTextWidth(lc.payslipTitle);doc.text(lc.payslipTitle,w/2-ptw/2,startY+17);
-    startY+=25;
-    lx(startY,period+'  |  '+coAddr,w/2,7,'normal',[130,130,130]); doc.setFontSize(7); const infoW=doc.getTextWidth(period+'  |  '+coAddr); doc.text(period+'  |  '+coAddr,w/2-infoW/2,startY+1); startY+=6;
+    // Logo left-aligned in centered header
+    let cLogoX = margin;
+    if(lc.logoType==='image' && lc.logoData) {
+      try { const _f=(lc.logoData.startsWith('data:image/jpeg')||lc.logoData.startsWith('data:image/jpg'))?'JPEG':'PNG'; doc.addImage(lc.logoData,_f,cLogoX,startY+4,14,14); } catch(e){}
+    } else if(lc.logoType==='text' && lc.logoText) {
+      doc.setFillColor(255,255,255); doc.roundedRect(cLogoX,startY+4,12,12,2,2,'F');
+      doc.setFontSize(7);doc.setFont(pFont,'bold');doc.setTextColor(...pc);
+      const lt=lc.logoText.slice(0,3); doc.text(lt,cLogoX+6-doc.getTextWidth(lt)/2,startY+12);
+    }
+    doc.setFontSize(12); const cw=doc.getTextWidth(co); doc.setFont(pFont,'bold'); doc.setTextColor(255,255,255); doc.text(co,w/2-cw/2,startY+8);
+    const cSubLine = [coReg, coAddr].filter(Boolean).join('  |  ');
+    if(cSubLine){ doc.setFontSize(6.5);doc.setFont(pFont,'normal');doc.setTextColor(200,215,240);const csw=doc.getTextWidth(cSubLine);doc.text(cSubLine,w/2-csw/2,startY+13); }
+    doc.setFontSize(17);doc.setFont(pFont,'bold');doc.setTextColor(255,255,255);const ptw=doc.getTextWidth(lc.payslipTitle);doc.text(lc.payslipTitle,w/2-ptw/2,startY+20);
+    startY+=27;
+    doc.setFontSize(7);doc.setFont(pFont,'normal');doc.setTextColor(130,130,130); const pInfo=period; const piw=doc.getTextWidth(pInfo); doc.text(pInfo,w/2-piw/2,startY+1); startY+=6;
   } else if(lc.headerStyle==='minimal') {
-    lx(startY+7,co,margin,13,'bold',pc);
-    lx(startY+12,coAddr,margin,7,'normal',[130,130,130]);
-    doc.setFontSize(16);doc.setFont(pFont,'bold');doc.setTextColor(...pc);const ptw=doc.getTextWidth(lc.payslipTitle);doc.text(lc.payslipTitle,w-margin-ptw,startY+9);
-    lx(startY+14,period,w-margin-doc.getTextWidth(period),7,'normal',[150,150,150]);
-    doc.setDrawColor(...pc);doc.setLineWidth(0.8);doc.line(margin,startY+16,w-margin,startY+16);doc.setLineWidth(0.2);
-    startY+=21;
+    let mLogoX = margin;
+    if(lc.logoType==='image' && lc.logoData) {
+      try { const _f=(lc.logoData.startsWith('data:image/jpeg')||lc.logoData.startsWith('data:image/jpg'))?'JPEG':'PNG'; doc.addImage(lc.logoData,_f,mLogoX,startY+1,16,16); mLogoX+=20; } catch(e){}
+    } else if(lc.logoType==='text' && lc.logoText) {
+      doc.setFillColor(...pc); doc.roundedRect(mLogoX,startY+1,12,12,2,2,'F');
+      doc.setFontSize(7);doc.setFont(pFont,'bold');doc.setTextColor(255,255,255);
+      const lt=lc.logoText.slice(0,3); doc.text(lt,mLogoX+6-doc.getTextWidth(lt)/2,startY+9);
+      mLogoX+=16;
+    }
+    lx(startY+6,co,mLogoX,12,'bold',pc);
+    if(coReg){ lx(startY+11,coReg,mLogoX,6.5,'normal',[130,130,130]); }
+    if(coAddr){ lx(startY+(coReg?15:11),coAddr,mLogoX,6.5,'normal',[150,150,150]); }
+    doc.setFontSize(15);doc.setFont(pFont,'bold');doc.setTextColor(...pc);const ptw=doc.getTextWidth(lc.payslipTitle);doc.text(lc.payslipTitle,w-margin-ptw,startY+8);
+    lx(startY+13,period,w-margin-doc.getTextWidth(period),7,'normal',[150,150,150]);
+    doc.setDrawColor(...pc);doc.setLineWidth(0.8);doc.line(margin,startY+18,w-margin,startY+18);doc.setLineWidth(0.2);
+    startY+=23;
   } else if(lc.headerStyle==='bold') {
     doc.setFillColor(26,26,46); doc.rect(0,startY,w,6,'F');
     doc.setFillColor(...pc); doc.rect(0,startY+6,w,15,'F');
-    lx(startY+15,co,margin,11,'bold',[255,255,255]);
-    doc.setFontSize(14);doc.setFont(pFont,'bold');doc.setTextColor(255,255,255);const ptw=doc.getTextWidth(lc.payslipTitle);doc.text(lc.payslipTitle,w-margin-ptw,startY+15);
-    startY+=25;
+    let bLogoX = margin;
+    if(lc.logoType==='image' && lc.logoData) {
+      try { const _f=(lc.logoData.startsWith('data:image/jpeg')||lc.logoData.startsWith('data:image/jpg'))?'JPEG':'PNG'; doc.addImage(lc.logoData,_f,bLogoX,startY+7,13,13); bLogoX+=17; } catch(e){ console.warn('bold logo failed:',e); }
+    } else if(lc.logoType==='text' && lc.logoText) {
+      doc.setFillColor(255,255,255); doc.roundedRect(bLogoX,startY+7,11,11,2,2,'F');
+      doc.setFontSize(7);doc.setFont(pFont,'bold');doc.setTextColor(...pc);
+      const lt=lc.logoText.slice(0,3); doc.text(lt,bLogoX+5.5-doc.getTextWidth(lt)/2,startY+14);
+      bLogoX+=15;
+    }
+    lx(startY+12,co,bLogoX,10,'bold',[255,255,255]);
+    const bSubLine = [coReg, coAddr].filter(Boolean).join('  |  ');
+    if(bSubLine) lx(startY+17,bSubLine,bLogoX,6,'normal',[200,215,240]);
+    doc.setFontSize(13);doc.setFont(pFont,'bold');doc.setTextColor(255,255,255);const ptw=doc.getTextWidth(lc.payslipTitle);doc.text(lc.payslipTitle,w-margin-ptw,startY+13);
+    lx(startY+19,period,w-margin-doc.getTextWidth(period),6.5,'normal',[200,215,240]);
+    startY+=26;
   }
 
   line(startY,margin,w-margin,pc); startY+=5;
@@ -1029,7 +1186,7 @@ function printPayslip(month,year,empId) {
   // Merge current employee leave/pay data so stale snapshots still show correct leave info
   const liveEmp = employees.find(e=>e.id===empId);
   const empData = Object.assign({}, snap, liveEmp ? { leaveBalance: liveEmp.leaveBalance, leaveTaken: liveEmp.leaveTaken, hourlyRate: liveEmp.hourlyRate, payType: liveEmp.payType } : {});
-  const lc = layoutConfig;
+  const lc = resolveLayout(); // synchronous — _logoCache always current
   const fontMap = { arial:"'Arial', sans-serif", times:"'Times New Roman', serif", georgia:"'Georgia', serif", courier:"'Courier New', monospace" };
   const fontFamily = fontMap[lc.font] || fontMap.arial;
   const p=lc.primaryColor, np=lc.netPayColor, eb=lc.earningsBg, db=lc.deductionsBg;
@@ -1042,10 +1199,10 @@ function printPayslip(month,year,empId) {
   else if(lc.logoType==='image'&&lc.logoData) logoHtml=`<img src="${lc.logoData}" style="height:38px;width:auto;object-fit:contain;margin-right:8px;flex-shrink:0"/>`;
   // Header HTML
   let hdr='';
-  if(lc.headerStyle==='classic') hdr=`<div style="background:${p};color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center"><div style="display:flex;align-items:center">${logoHtml}<div><div style="font-size:15px;font-weight:bold">${esc(co)}</div><div style="font-size:9px;opacity:.75">${esc(settings.companyAddr||'Windhoek, Namibia')}</div></div></div><div style="text-align:right"><div style="font-size:20px;font-weight:bold;letter-spacing:2px">${esc(lc.payslipTitle)}</div><div style="font-size:10px;opacity:.8">Period: ${period}</div></div></div>`;
-  else if(lc.headerStyle==='centered') hdr=`<div style="background:${p};color:#fff;padding:14px;text-align:center"><div style="font-size:14px;font-weight:bold">${esc(co)}</div><div style="font-size:22px;font-weight:bold;letter-spacing:3px;margin:4px 0">${esc(lc.payslipTitle)}</div><div style="font-size:10px;opacity:.8">Period: ${period}</div></div>`;
-  else if(lc.headerStyle==='minimal') hdr=`<div style="padding:12px 16px;border-bottom:3px solid ${p};display:flex;justify-content:space-between;align-items:center">${logoHtml?`<div style="display:flex;align-items:center">${logoHtml}`:''}<div style="font-size:14px;font-weight:bold;color:${p}">${esc(co)}</div>${logoHtml?'</div>':''}<div style="text-align:right"><div style="font-size:18px;font-weight:bold;color:${p}">${esc(lc.payslipTitle)}</div><div style="font-size:10px;color:#888">${period}</div></div></div>`;
-  else hdr=`<div style="background:#1a1a2e;padding:0"><div style="background:${p};padding:12px 16px;display:flex;justify-content:space-between;align-items:center"><div style="color:#fff"><div style="font-size:15px;font-weight:bold">${esc(co)}</div></div><div style="text-align:right;color:#fff"><div style="font-size:20px;font-weight:bold;letter-spacing:3px">${esc(lc.payslipTitle)}</div><div style="font-size:10px;opacity:.8">${period}</div></div></div></div>`;
+  if(lc.headerStyle==='classic') hdr=`<div style="background:${p};color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center"><div style="display:flex;align-items:center">${logoHtml}<div><div style="font-size:15px;font-weight:bold">${esc(co)}</div>${settings.companyReg?`<div style="font-size:8px;opacity:.8">${esc(settings.companyReg)}</div>`:''}<div style="font-size:8px;opacity:.75">${esc(settings.companyAddr||'Windhoek, Namibia')}</div></div></div><div style="text-align:right"><div style="font-size:20px;font-weight:bold;letter-spacing:2px">${esc(lc.payslipTitle)}</div><div style="font-size:10px;opacity:.8">Period: ${period}</div></div></div>`;
+  else if(lc.headerStyle==='centered') hdr=`<div style="background:${p};color:#fff;padding:14px;text-align:center;position:relative">${logoHtml?`<div style="position:absolute;left:12px;top:50%;transform:translateY(-50%)">${logoHtml}</div>`:''}<div style="font-size:14px;font-weight:bold">${esc(co)}</div>${settings.companyReg?`<div style="font-size:8px;opacity:.8">${esc(settings.companyReg)}</div>`:''}<div style="font-size:8px;opacity:.75">${esc(settings.companyAddr||'')}</div><div style="font-size:22px;font-weight:bold;letter-spacing:3px;margin:4px 0">${esc(lc.payslipTitle)}</div><div style="font-size:10px;opacity:.8">Period: ${period}</div></div>`;
+  else if(lc.headerStyle==='minimal') hdr=`<div style="padding:12px 16px;border-bottom:3px solid ${p};display:flex;justify-content:space-between;align-items:center">${logoHtml?`<div style="display:flex;align-items:center">${logoHtml}`:''}<div><div style="font-size:14px;font-weight:bold;color:${p}">${esc(co)}</div>${settings.companyReg?`<div style="font-size:8px;color:#666">${esc(settings.companyReg)}</div>`:''}<div style="font-size:8px;color:#888">${esc(settings.companyAddr||'')}</div></div>${logoHtml?'</div>':''}<div style="text-align:right"><div style="font-size:18px;font-weight:bold;color:${p}">${esc(lc.payslipTitle)}</div><div style="font-size:10px;color:#888">${period}</div></div></div>`;
+  else hdr=`<div style="background:#1a1a2e;padding:0"><div style="background:${p};padding:12px 16px;display:flex;justify-content:space-between;align-items:center"><div style="display:flex;align-items:center">${logoHtml}<div style="color:#fff"><div style="font-size:15px;font-weight:bold">${esc(co)}</div>${settings.companyReg?`<div style="font-size:8px;opacity:.8">${esc(settings.companyReg)}</div>`:''}<div style="font-size:8px;opacity:.75">${esc(settings.companyAddr||'')}</div></div></div><div style="text-align:right;color:#fff"><div style="font-size:20px;font-weight:bold;letter-spacing:3px">${esc(lc.payslipTitle)}</div><div style="font-size:10px;opacity:.8">${period}</div></div></div></div>`;
   const accDisplay = lc.showAccountNumber && empData.accountNo ? `${empData.bankName||''} ···${empData.accountNo.slice(-4)}` : (empData.bankName||'');
   // Net pay HTML
   let netHtml='';
@@ -1055,7 +1212,7 @@ function printPayslip(month,year,empId) {
   const watermarkStyle = lc.watermark ? `position:relative` : '';
   const win=window.open('','_blank');
   win.document.write(`<!DOCTYPE html><html><head><title>${esc(lc.payslipTitle)} - ${esc(empData.name)}</title>
-  <style>body{font-family:${fontFamily};margin:0;padding:0;color:#222;font-size:11px}*{box-sizing:border-box}.row{display:flex;justify-content:space-between;padding:2px 0}.emp-box{background:#f8fafc;border:1px solid #e2e8f0;padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:10px;border-left:4px solid ${p}}.emp-label{color:#888;font-size:9px;text-transform:uppercase}.emp-val{font-weight:bold;font-size:11px}@media print{.no-print{display:none}}</style>
+  <style>*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;color-adjust:exact!important;box-sizing:border-box}body{font-family:${fontFamily};margin:0;padding:0;color:#222;font-size:11px}.row{display:flex;justify-content:space-between;padding:2px 0}.emp-box{background:#f8fafc!important;border:1px solid #e2e8f0;padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:10px;border-left:4px solid ${p}!important}.emp-label{color:#888;font-size:9px;text-transform:uppercase}.emp-val{font-weight:bold;font-size:11px}@media print{.no-print{display:none}@page{margin:0}}</style>
   </head><body>
   ${lc.flagBar?`<div style="height:4px;background:linear-gradient(to right,#003DA6 33%,#CC0001 33%,#CC0001 67%,#009A44 67%)"></div>`:''}
   ${hdr}
@@ -1194,6 +1351,9 @@ function clearAllData() {
   localStorage.removeItem('smartpayroll_runs');
   localStorage.removeItem('smartpayroll_settings');
   localStorage.removeItem('smartpayroll_layout');
+  localStorage.removeItem('smartpayroll_logo'); // legacy key cleanup
+  _logoCache = '';
+  _logoDB.clear().catch(() => {}); // clear logo from IndexedDB
   employees=[]; payrollRuns=[]; settings={}; payrollEntries={};
   layoutConfig = { preset:'namibian', primaryColor:'#003DA6', accentColor:'#009A44', netPayColor:'#065f46', earningsBg:'#eff6ff', deductionsBg:'#fef2f2', flagBar:true, headerStyle:'classic', logoType:'none', logoText:'', logoData:'', payslipTitle:'PAYSLIP', font:'arial', netPayStyle:'box', twoColumns:false, showEmployerCosts:true, showSignatureLines:true, showAccountNumber:true, showYTD:false, customFooter:'Generated by SmartPayroll – Namibian Payroll System', watermark:'' };
   updateDashboard(); renderEmployees(); renderPayslips();
@@ -1254,19 +1414,50 @@ function lcLogoUpload(event) {
   const file = event.target.files[0]; if(!file) return;
   const reader = new FileReader();
   reader.onload = e => {
-    layoutConfig.logoData = e.target.result;
-    document.getElementById('logo-thumb-img').src = e.target.result;
-    document.getElementById('logo-preview-thumb').classList.remove('hidden');
-    lcUpdate();
+    const img = new Image();
+    img.onload = async () => {
+      // Resize to max 400x160 — stored in IndexedDB so no size pressure
+      const MAX_W = 400, MAX_H = 160;
+      let w = img.width, h = img.height;
+      if (w > MAX_W || h > MAX_H) {
+        const ratio = Math.min(MAX_W / w, MAX_H / h);
+        w = Math.round(w * ratio); h = Math.round(h * ratio);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      // No background fill — preserves PNG transparency
+      ctx.drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/png', 1.0); // Full quality PNG with transparency
+      // Persist to IndexedDB
+      try {
+        await _logoDB.save(dataUrl);
+
+      } catch(err) {
+        console.warn('[SmartPayroll] IndexedDB logo save FAILED:', err);
+      }
+      _logoCache = dataUrl;               // available instantly — no async needed
+      layoutConfig.logoData = dataUrl;
+      layoutConfig.logoType = 'image';
+      document.getElementById('logo-thumb-img').src = dataUrl;
+      document.getElementById('logo-preview-thumb').classList.remove('hidden');
+      lcUpdate();
+      saveLayoutData(); // Save layout settings (logo NOT stored here)
+    };
+    img.src = e.target.result;
   };
   reader.readAsDataURL(file);
 }
 
 function clearLogoImage() {
+  _logoCache = '';
   layoutConfig.logoData = '';
+  _logoDB.clear().catch(() => {});
+  localStorage.removeItem('smartpayroll_logo'); // clean up legacy key too
   document.getElementById('logo-preview-thumb').classList.add('hidden');
   document.getElementById('logo-thumb-img').src = '';
   lcUpdate();
+  saveLayoutData();
 }
 
 function setHeaderStyle(style) {
@@ -1336,7 +1527,11 @@ function loadLayoutEditorForm() {
   document.querySelectorAll('[name="logo-type"]').forEach(r=>{ r.checked=(r.value===lc.logoType); });
   document.getElementById('logo-text-input').classList.toggle('hidden', lc.logoType!=='text');
   document.getElementById('logo-image-input').classList.toggle('hidden', lc.logoType!=='image');
-  if(lc.logoData) { document.getElementById('logo-thumb-img').src=lc.logoData; document.getElementById('logo-preview-thumb').classList.remove('hidden'); }
+  // Logo is in layoutConfig.logoData (warmed from IndexedDB at startup)
+  if(lc.logoData && lc.logoData.startsWith('data:')) {
+    document.getElementById('logo-thumb-img').src = lc.logoData;
+    document.getElementById('logo-preview-thumb').classList.remove('hidden');
+  }
 }
 
 function saveLayoutConfig() {
@@ -1354,7 +1549,7 @@ function resetLayoutConfig() {
 
 // Build sample payslip HTML for preview using current layoutConfig + sample data
 function buildPreviewHTML() {
-  const lc = layoutConfig;
+  const lc = Object.assign({}, layoutConfig); // preview uses in-memory (already warmed by warmLogo)
   const co = settings.companyName || 'Namibian Company Pty Ltd';
   const coAddr = settings.companyAddr || '123 Independence Avenue, Windhoek, Namibia';
   const fontMap = { arial:"'Arial', sans-serif", times:"'Times New Roman', serif", georgia:"'Georgia', serif", courier:"'Courier New', monospace" };
@@ -1564,6 +1759,7 @@ document.getElementById('current-date').textContent = new Date().toLocaleDateStr
 // INIT
 // ============================================================
 load();
+warmLogo(); // Async: loads logo from IndexedDB into layoutConfig.logoData
 initDarkMode();
 initPayrollYears();
 updateDashboard();
@@ -1651,6 +1847,59 @@ function setPayType(type) {
   }
   // Clear warning
   document.getElementById('emp-modal-warn').classList.add('hidden');
+}
+
+// ============================================================
+// ============================================================
+// APP CACHE MANAGEMENT
+// ============================================================
+async function clearAppCache() {
+  const btn = document.getElementById('btn-clear-cache');
+  const status = document.getElementById('sw-cache-status');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<svg class="w-4 h-4 animate-spin" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Clearing…'; }
+
+  try {
+    // 1. Delete all caches via Cache API
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+    // Also wipe IndexedDB logo store so app fully resets
+    try { await _logoDB.clear(); } catch(e) {}
+
+    // 2. Tell the service worker to skip waiting and take over immediately
+    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({ type: 'SKIP_WAITING' });
+    }
+
+    // 3. Unregister the current service worker so the next load fetches fresh
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.unregister()));
+    }
+
+    toast('Cache cleared — reloading…', 'green');
+    setTimeout(() => window.location.reload(true), 900);
+  } catch (e) {
+    console.error('clearAppCache failed:', e);
+    toast('Cache clear failed: ' + e.message, 'red');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Clear Cache & Reload'; }
+  }
+}
+
+async function updateCacheStatusDisplay() {
+  const el = document.getElementById('sw-cache-status');
+  if (!el) return;
+  try {
+    if (!('caches' in window)) { el.textContent = 'Cache API not available in this browser.'; return; }
+    const keys = await caches.keys();
+    if (!keys.length) { el.textContent = 'No cached versions found.'; return; }
+    const sizes = await Promise.all(keys.map(async k => {
+      const c = await caches.open(k); const reqs = await c.keys(); return reqs.length;
+    }));
+    const total = sizes.reduce((a,b)=>a+b,0);
+    el.textContent = `Active: ${keys.join(', ')} · ${total} cached file${total!==1?'s':''}.`;
+  } catch(e) { el.textContent = 'Unable to read cache info.'; }
 }
 
 // ============================================================
@@ -2123,9 +2372,17 @@ function importFromJSON(parsed) {
   }
 
   if ((type === 'backup' || type === 'settings') && parsed.layoutConfig && importLayout) {
-    layoutConfig = { ...layoutConfig, ...parsed.layoutConfig };
-    saveLayoutData();
-    msgs.push('Layout config imported');
+    const importedLc = parsed.layoutConfig;
+    layoutConfig = { ...layoutConfig, ...importedLc };
+    // If the backup contains a logo, compress it and save to IndexedDB + _logoCache
+    if (importedLc.logoData && importedLc.logoData.startsWith('data:')) {
+      compressAndCacheLogo(importedLc.logoData).then(() => {
+        msgs.push('Layout config imported');
+      });
+    } else {
+      saveLayoutData();
+      msgs.push('Layout config imported');
+    }
   }
 
   updateDashboard(); renderEmployees(); renderPayslips();
