@@ -568,6 +568,75 @@
               </div>
             </div>
 
+            <!-- Spacing -->
+            <div class="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4">
+              <h4 class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-3">Spacing &amp; Density</h4>
+              <p class="text-xs text-slate-400 dark:text-slate-500 mb-3">All values in millimetres (mm). Default values match the standard layout.</p>
+              <div class="space-y-2.5">
+
+                <div class="flex items-center justify-between gap-2">
+                  <label class="text-xs text-slate-600 dark:text-slate-300 flex-1">After header → employee box</label>
+                  <div class="flex items-center gap-1">
+                    <input type="number" id="lc-sp-after-header" min="1" max="20" step="0.5" value="5"
+                      oninput="lcUpdate()"
+                      class="w-16 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded px-2 py-1 text-xs text-center focus:border-blue-400"/>
+                    <span class="text-xs text-slate-400">mm</span>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between gap-2">
+                  <label class="text-xs text-slate-600 dark:text-slate-300 flex-1">Employee info box height</label>
+                  <div class="flex items-center gap-1">
+                    <input type="number" id="lc-sp-emp-box" min="20" max="60" step="1" value="38"
+                      oninput="lcUpdate()"
+                      class="w-16 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded px-2 py-1 text-xs text-center focus:border-blue-400"/>
+                    <span class="text-xs text-slate-400">mm</span>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between gap-2">
+                  <label class="text-xs text-slate-600 dark:text-slate-300 flex-1">After employee box → earnings</label>
+                  <div class="flex items-center gap-1">
+                    <input type="number" id="lc-sp-after-emp" min="1" max="20" step="0.5" value="5"
+                      oninput="lcUpdate()"
+                      class="w-16 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded px-2 py-1 text-xs text-center focus:border-blue-400"/>
+                    <span class="text-xs text-slate-400">mm</span>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between gap-2">
+                  <label class="text-xs text-slate-600 dark:text-slate-300 flex-1">Row height (each earning/deduction line)</label>
+                  <div class="flex items-center gap-1">
+                    <input type="number" id="lc-sp-row-height" min="3" max="12" step="0.5" value="5"
+                      oninput="lcUpdate()"
+                      class="w-16 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded px-2 py-1 text-xs text-center focus:border-blue-400"/>
+                    <span class="text-xs text-slate-400">mm</span>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between gap-2">
+                  <label class="text-xs text-slate-600 dark:text-slate-300 flex-1">Section gap (after totals blocks)</label>
+                  <div class="flex items-center gap-1">
+                    <input type="number" id="lc-sp-section-gap" min="4" max="25" step="0.5" value="12"
+                      oninput="lcUpdate()"
+                      class="w-16 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded px-2 py-1 text-xs text-center focus:border-blue-400"/>
+                    <span class="text-xs text-slate-400">mm</span>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between gap-2">
+                  <label class="text-xs text-slate-600 dark:text-slate-300 flex-1">After net pay block</label>
+                  <div class="flex items-center gap-1">
+                    <input type="number" id="lc-sp-after-net" min="2" max="20" step="0.5" value="8"
+                      oninput="lcUpdate()"
+                      class="w-16 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded px-2 py-1 text-xs text-center focus:border-blue-400"/>
+                    <span class="text-xs text-slate-400">mm</span>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+
             <!-- Save -->
             <div class="flex gap-2 pb-4">
               <button onclick="saveLayoutConfig()" class="flex-1 bg-primary-500 hover:bg-primary-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">Save Layout</button>
