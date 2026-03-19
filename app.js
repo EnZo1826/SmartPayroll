@@ -61,12 +61,16 @@ function calcSSC(basicSalary) {
   return Math.round(ssc * 100) / 100;
 }
 
-// Minimum wage check: N$18/hr × 195 hrs = N$3,510/month
-const MIN_WAGE_MONTHLY = 18 * 195; // 3510
+// Monthly hours — configurable in Settings (default 195)
+// Always read from settings at call time so it stays live
+function monthlyHours() { return parseFloat(settings.monthlyHours) || 195; }
 
-// Hourly rate from monthly salary (195 hrs/month)
+// Minimum wage: N$18/hr × monthlyHours
+function MIN_WAGE_MONTHLY() { return 18 * monthlyHours(); }
+
+// Hourly rate from monthly salary
 function hourlyRate(basicSalary) {
-  return basicSalary / 195;
+  return basicSalary / monthlyHours();
 }
 
 // OT pay: normal 1.5×, Sunday/PH 2×
@@ -295,7 +299,7 @@ function renderEmployees() {
   }
   tbody.innerHTML = filtered.map(e=>{
     const isHourly = e.payType === 'hourly';
-    const belowMin = isHourly ? (parseFloat(e.hourlyRate)||0) < 18 : parseFloat(e.basicSalary) < MIN_WAGE_MONTHLY;
+    const belowMin = isHourly ? (parseFloat(e.hourlyRate)||0) < 18 : parseFloat(e.basicSalary) < MIN_WAGE_MONTHLY();
     const payTypeBadge = isHourly
       ? `<span class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 font-medium">⏱ Hourly</span>`
       : `<span class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-medium">📅 Monthly</span>`;
@@ -376,8 +380,8 @@ function closeEmpModal() { document.getElementById('emp-modal').classList.add('h
 document.getElementById('ef-salary').addEventListener('input', function(){
   const v = parseFloat(this.value)||0;
   const w = document.getElementById('emp-modal-warn');
-  if(v>0 && v<MIN_WAGE_MONTHLY) {
-    w.textContent = `⚠ Salary N$${v.toFixed(2)} is below the Namibian minimum wage of N$${MIN_WAGE_MONTHLY.toFixed(2)}/month (N$18.00/hr × 195 hrs).`;
+  if(v>0 && v<MIN_WAGE_MONTHLY()) {
+    w.textContent = `⚠ Salary N$${v.toFixed(2)} is below the Namibian minimum wage of N$${MIN_WAGE_MONTHLY().toFixed(2)}/month (N$18.00/hr × ${monthlyHours()} hrs).`;
     w.classList.remove('hidden');
   } else { w.classList.add('hidden'); }
 });
@@ -519,7 +523,7 @@ function renderPayrollTable() {
     const entry = payrollEntries[emp.id]||{otNormal:0,otSun:0,allowances:[],otherEarnings:0,deductions:[]};
     const calc = calcEmployeePayroll(emp,entry);
     const isHourly = emp.payType === 'hourly';
-    const warn = isHourly ? (parseFloat(emp.hourlyRate)||0)<18 : parseFloat(emp.basicSalary)<MIN_WAGE_MONTHLY;
+    const warn = isHourly ? (parseFloat(emp.hourlyRate)||0)<18 : parseFloat(emp.basicSalary)<MIN_WAGE_MONTHLY();
     return `<tr class="payroll-row" id="pr-row-${emp.id}">
       <td class="px-3 py-2 sticky left-0 bg-white dark:bg-slate-800">
         <div class="font-medium text-slate-900 dark:text-white text-xs leading-tight">${esc(emp.name)}</div>
@@ -1837,6 +1841,12 @@ function loadSettingsForm() {
   document.getElementById('set-company-tax').value = settings.companyTax||'';
   document.getElementById('set-tax-year-start').value = settings.taxYearStart||3;
   document.getElementById('set-default-leave').value = settings.defaultLeave||20;
+  document.getElementById('set-monthly-hours').value = settings.monthlyHours||195;
+  // Update the tax reference card to reflect the current monthly hours
+  const refHrs = document.getElementById('ref-monthly-hours');
+  const refMin = document.getElementById('ref-min-wage');
+  if(refHrs) refHrs.textContent = monthlyHours();
+  if(refMin) refMin.textContent = `N$${MIN_WAGE_MONTHLY().toFixed(2)}`;
 }
 
 function saveSettings() {
@@ -1846,6 +1856,7 @@ function saveSettings() {
   settings.companyTax = document.getElementById('set-company-tax').value;
   settings.taxYearStart = parseInt(document.getElementById('set-tax-year-start').value)||3;
   settings.defaultLeave = parseFloat(document.getElementById('set-default-leave').value)||20;
+  settings.monthlyHours = parseFloat(document.getElementById('set-monthly-hours').value)||195;
   saveSettingsData();
   toast('Settings saved.','green');
 }
