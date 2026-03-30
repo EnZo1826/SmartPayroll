@@ -68,6 +68,22 @@
       </div>
     </div>
 
+    <!-- Company Profile Switcher -->
+    <div class="px-3 py-2 border-b border-slate-200 dark:border-slate-700">
+      <div class="flex items-center justify-between mb-1.5">
+        <span class="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wide">Company</span>
+        <button onclick="openProfileModal()" title="Manage companies"
+          class="p-1 rounded-lg text-slate-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/30 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+          </svg>
+        </button>
+      </div>
+      <div id="profile-switcher" class="space-y-0.5">
+        <!-- populated by renderProfileSwitcher() -->
+      </div>
+    </div>
+
     <!-- Nav -->
     <nav class="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto">
       <a href="#" class="sidebar-link active text-slate-600 dark:text-slate-300" data-tab="dashboard">
@@ -1109,6 +1125,40 @@
       <div class="flex gap-3">
         <button onclick="closeIOModal()" class="flex-1 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 px-4 py-3 rounded-xl text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">Cancel</button>
         <button id="io-import-btn" onclick="executeImport()" disabled class="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white px-4 py-3 rounded-xl text-sm font-medium transition-colors">Import</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ PROFILE MODAL ══ -->
+<div id="profile-modal" class="modal-overlay hidden">
+  <div class="modal-box bg-white dark:bg-slate-800 shadow-2xl p-5 sm:p-6" style="max-width:480px">
+    <div class="flex items-center justify-between mb-5">
+      <div>
+        <h3 class="text-base font-bold text-slate-900 dark:text-white">Company Profiles</h3>
+        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Each company has its own employees, payroll runs and settings</p>
+      </div>
+      <button onclick="closeProfileModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <!-- Existing profiles -->
+    <div id="profile-list" class="space-y-2 mb-5 max-h-64 overflow-y-auto pr-1">
+      <!-- populated by renderProfileModal() -->
+    </div>
+
+    <!-- Add new profile -->
+    <div class="border-t border-slate-200 dark:border-slate-600 pt-4">
+      <p class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">Add New Company</p>
+      <div class="flex gap-2">
+        <input type="text" id="new-profile-name" placeholder="Company name…"
+          class="flex-1 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded-lg px-3 py-2.5 text-sm focus:border-blue-400"
+          onkeydown="if(event.key==='Enter') addProfile()"/>
+        <button onclick="addProfile()"
+          class="bg-primary-500 hover:bg-primary-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap">
+          Add Company
+        </button>
       </div>
     </div>
   </div>

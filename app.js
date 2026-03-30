@@ -1,6 +1,56 @@
 // ============================================================
 // STATE
 // ============================================================
+
+// ── Company Profiles ──────────────────────────────────────
+// Each profile has its own namespaced localStorage keys.
+let activeProfileId = 'default';
+
+function profileKey(base) {
+  return `smartpayroll_${base}_${activeProfileId}`;
+}
+
+function getProfiles() {
+  try { return JSON.parse(localStorage.getItem('smartpayroll_profiles') || '[]'); } catch(e) { return []; }
+}
+
+function saveProfiles(list) {
+  localStorage.setItem('smartpayroll_profiles', JSON.stringify(list));
+}
+
+function getActiveProfileId() {
+  return localStorage.getItem('smartpayroll_active_profile') || 'default';
+}
+
+function setActiveProfileId(id) {
+  activeProfileId = id;
+  localStorage.setItem('smartpayroll_active_profile', id);
+}
+
+// Ensure a default profile always exists
+function initProfiles() {
+  let profiles = getProfiles();
+  if (!profiles.length) {
+    profiles = [{ id: 'default', name: 'Default Company', createdAt: new Date().toISOString() }];
+    saveProfiles(profiles);
+  }
+  // Migrate any existing data into the default profile if keys are bare (pre-profile)
+  const legacyEmployees = localStorage.getItem('smartpayroll_employees');
+  if (legacyEmployees && !localStorage.getItem('smartpayroll_employees_default')) {
+    localStorage.setItem('smartpayroll_employees_default', legacyEmployees);
+    localStorage.setItem('smartpayroll_runs_default',     localStorage.getItem('smartpayroll_runs') || '[]');
+    localStorage.setItem('smartpayroll_settings_default', localStorage.getItem('smartpayroll_settings') || '{}');
+    const layout = localStorage.getItem('smartpayroll_layout');
+    if (layout) localStorage.setItem('smartpayroll_layout_default', layout);
+    const logo = localStorage.getItem('smartpayroll_logo');
+    if (logo) localStorage.setItem('smartpayroll_logo_default', logo);
+    // Remove bare keys so they don't interfere
+    ['smartpayroll_employees','smartpayroll_runs','smartpayroll_settings','smartpayroll_layout','smartpayroll_logo']
+      .forEach(k => localStorage.removeItem(k));
+  }
+  activeProfileId = getActiveProfileId();
+}
+
 let employees = [];
 let payrollRuns = [];
 let payrollEntries = {}; // keyed by employeeId for current run
@@ -42,11 +92,34 @@ function calcAnnualPAYE(annualIncome) {
   return 429000 + (annualIncome - 1550000) * 0.37;
 }
 
-// Monthly PAYE: annualise gross earnings, compute annual tax, divide by 12
+// Marginal tax rate for a given annual income
+function marginalRate(annualIncome) {
+  if (annualIncome <= 100000)  return 0;
+  if (annualIncome <= 150000)  return 0.18;
+  if (annualIncome <= 350000)  return 0.25;
+  if (annualIncome <= 550000)  return 0.28;
+  if (annualIncome <= 850000)  return 0.30;
+  if (annualIncome <= 1550000) return 0.32;
+  return 0.37;
+}
+
+// Correct Namibian PAYE calculation:
+//   1. Annualise BASIC SALARY only → compute annual tax → divide by 12
+//   2. Apply the marginal rate to variable income (OT, allowances, other earnings)
+//      so that non-recurring income is never projected across 12 months.
+function calcPAYE(basic, variableIncome) {
+  const annualBasic = basic * 12;
+  const monthlyOnBasic = Math.round((calcAnnualPAYE(annualBasic) / 12) * 100) / 100;
+  const rate = marginalRate(annualBasic);
+  const onVariable = Math.round(variableIncome * rate * 100) / 100;
+  return Math.round((monthlyOnBasic + onVariable) * 100) / 100;
+}
+
+// Legacy single-argument wrapper — kept for any external callers
+// Uses annualised-gross method (less accurate but backward-compatible)
 function calcMonthlyPAYE(monthlyGross) {
   const annual = monthlyGross * 12;
-  const annualTax = calcAnnualPAYE(annual);
-  return Math.round((annualTax / 12) * 100) / 100;
+  return Math.round((calcAnnualPAYE(annual) / 12) * 100) / 100;
 }
 
 // SSC Employee: 0.9% of basic salary
@@ -98,7 +171,9 @@ function calcEmployeePayroll(emp, entry) {
   const otherEarnings = parseFloat(entry.otherEarnings) || 0;
   const grossEarnings = basic + otPay + allowances + otherEarnings;
   const sscEmployee = calcSSC(basic);
-  const paye = calcMonthlyPAYE(grossEarnings);
+  // PAYE: basic is annualised; OT, allowances, and other earnings are taxed at the marginal rate
+  const variableIncome = otPay + allowances + otherEarnings;
+  const paye = calcPAYE(basic, variableIncome);
   const otherDeductions = (entry.deductions || []).reduce((s,d)=>s+(parseFloat(d.amount)||0),0);
   const totalDeductions = sscEmployee + paye + otherDeductions;
   const netPay = grossEarnings - totalDeductions;
@@ -151,7 +226,7 @@ const _logoDB = (() => {
       const db = await open();
       return new Promise((resolve, reject) => {
         const tx = db.transaction('logo', 'readwrite');
-        tx.objectStore('logo').put(data, 'company_logo');
+        tx.objectStore('logo').put(data, 'company_logo_' + activeProfileId);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
@@ -160,7 +235,7 @@ const _logoDB = (() => {
       const db = await open();
       return new Promise((resolve, reject) => {
         const tx = db.transaction('logo', 'readonly');
-        const req = tx.objectStore('logo').get('company_logo');
+        const req = tx.objectStore('logo').get('company_logo_' + activeProfileId);
         req.onsuccess = () => resolve(req.result || '');
         req.onerror = () => reject(req.error);
       });
@@ -169,7 +244,7 @@ const _logoDB = (() => {
       const db = await open();
       return new Promise((resolve, reject) => {
         const tx = db.transaction('logo', 'readwrite');
-        tx.objectStore('logo').delete('company_logo');
+        tx.objectStore('logo').delete('company_logo_' + activeProfileId);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
@@ -227,28 +302,25 @@ async function warmLogo() {
 
 
 function load() {
-  employees = JSON.parse(localStorage.getItem('smartpayroll_employees') || '[]');
-  payrollRuns = JSON.parse(localStorage.getItem('smartpayroll_runs') || '[]');
-  settings = JSON.parse(localStorage.getItem('smartpayroll_settings') || '{}');
-  const savedLayout = localStorage.getItem('smartpayroll_layout');
+  employees = JSON.parse(localStorage.getItem(profileKey('employees')) || '[]');
+  payrollRuns = JSON.parse(localStorage.getItem(profileKey('runs')) || '[]');
+  settings = JSON.parse(localStorage.getItem(profileKey('settings')) || '{}');
+  const savedLayout = localStorage.getItem(profileKey('layout'));
   if(savedLayout) {
     try {
       const parsed = JSON.parse(savedLayout);
-      // Logo is stored in IndexedDB — warmLogo() handles rehydration after load()
       parsed.logoData = '';
       layoutConfig = { ...layoutConfig, ...parsed };
     } catch(e) { console.error('Failed to load layout config:', e); }
   }
 }
-function saveEmployees() { localStorage.setItem('smartpayroll_employees', JSON.stringify(employees)); }
-function saveRuns() { localStorage.setItem('smartpayroll_runs', JSON.stringify(payrollRuns)); }
-function saveSettingsData() { localStorage.setItem('smartpayroll_settings', JSON.stringify(settings)); }
+function saveEmployees() { localStorage.setItem(profileKey('employees'), JSON.stringify(employees)); }
+function saveRuns() { localStorage.setItem(profileKey('runs'), JSON.stringify(payrollRuns)); }
+function saveSettingsData() { localStorage.setItem(profileKey('settings'), JSON.stringify(settings)); }
 function saveLayoutData() {
-  // Logo is stored in IndexedDB — never in localStorage
-  // Strip it from the layout JSON to keep the localStorage key tiny
   try {
     const toStore = { ...layoutConfig, logoData: '' };
-    localStorage.setItem('smartpayroll_layout', JSON.stringify(toStore));
+    localStorage.setItem(profileKey('layout'), JSON.stringify(toStore));
   } catch(e) {
     toast('Layout save failed — storage full. Clear old payroll runs in Settings.', 'red');
     console.error('saveLayoutData failed:', e);
@@ -1309,6 +1381,7 @@ function updateDashboard() {
   document.getElementById('dash-emp-count').textContent = employees.length;
   document.getElementById('emp-count-badge').textContent = employees.length;
   initReportSelectors();
+  renderProfileSwitcher();
   // Latest run stats
   const now = new Date();
   const m=now.getMonth()+1, y=now.getFullYear();
@@ -1337,6 +1410,153 @@ function updateDashboard() {
   }).join('');
 }
 
+
+
+// ============================================================
+// COMPANY PROFILE MANAGEMENT
+// ============================================================
+
+function renderProfileSwitcher() {
+  const profiles = getProfiles();
+  const container = document.getElementById('profile-switcher');
+  if (!container) return;
+
+  container.innerHTML = profiles.map(p => `
+    <button onclick="switchProfile('${p.id}')"
+      class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs transition-colors text-left ${p.id === activeProfileId
+        ? 'bg-primary-500 text-white font-semibold'
+        : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}">
+      <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+      </svg>
+      <span class="truncate flex-1">${esc(p.name)}</span>
+      ${p.id === activeProfileId ? '<svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>' : ''}
+    </button>`).join('');
+
+  // Update header company name display
+  const activeProfile = profiles.find(p => p.id === activeProfileId);
+  const nameEl = document.getElementById('active-profile-name');
+  if (nameEl && activeProfile) nameEl.textContent = activeProfile.name;
+}
+
+function switchProfile(id) {
+  if (id === activeProfileId) return;
+  // Save current state before switching
+  saveEmployees(); saveRuns(); saveSettingsData(); saveLayoutData();
+  // Switch
+  setActiveProfileId(id);
+  // Reset in-memory state
+  employees = []; payrollRuns = []; payrollEntries = {}; settings = {};
+  _logoCache = '';
+  layoutConfig = {
+    preset:'namibian', primaryColor:'#003DA6', accentColor:'#009A44',
+    netPayColor:'#065f46', earningsBg:'#eff6ff', deductionsBg:'#fef2f2',
+    flagBar:true, headerStyle:'classic', logoType:'none', logoText:'',
+    logoData:'', payslipTitle:'PAYSLIP', font:'arial',
+    netPayStyle:'box', twoColumns:false, showEmployerCosts:true,
+    showSignatureLines:true, showAccountNumber:true, showYTD:false,
+    customFooter:'Generated by SmartPayroll – Namibian Payroll System', watermark:'',
+    spacingAfterHeader:5, spacingEmployeeBox:38, spacingAfterEmpBox:5,
+    spacingSectionGap:12, spacingRowHeight:5, spacingAfterNetPay:8
+  };
+  // Load new profile data
+  load();
+  warmLogo();
+  // Refresh UI
+  updateDashboard();
+  renderEmployees();
+  renderPayslips();
+  renderProfileSwitcher();
+  switchTab('dashboard');
+  toast(`Switched to ${getProfiles().find(p=>p.id===id)?.name || id}`, 'green');
+  // Close modal if open
+  closeProfileModal();
+}
+
+function openProfileModal() {
+  renderProfileModal();
+  document.getElementById('profile-modal').classList.remove('hidden');
+}
+
+function closeProfileModal() {
+  const m = document.getElementById('profile-modal');
+  if(m) m.classList.add('hidden');
+}
+
+function renderProfileModal() {
+  const profiles = getProfiles();
+  const list = document.getElementById('profile-list');
+  if (!list) return;
+
+  list.innerHTML = profiles.map(p => `
+    <div class="flex items-center gap-2 p-2.5 rounded-xl border ${p.id === activeProfileId
+      ? 'border-primary-300 dark:border-primary-600 bg-primary-50 dark:bg-primary-900/20'
+      : 'border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800'}">
+      <div class="flex-1 min-w-0">
+        <div class="text-sm font-medium text-slate-900 dark:text-white truncate">${esc(p.name)}</div>
+        <div class="text-xs text-slate-400 dark:text-slate-500">Created ${new Date(p.createdAt).toLocaleDateString('en-NA')}</div>
+      </div>
+      <div class="flex items-center gap-1 flex-shrink-0">
+        ${p.id === activeProfileId
+          ? '<span class="text-xs text-primary-600 dark:text-primary-400 font-semibold px-2 py-1 bg-primary-100 dark:bg-primary-900/40 rounded-full">Active</span>'
+          : `<button onclick="switchProfile('${p.id}')" class="text-xs text-primary-600 dark:text-primary-400 hover:underline px-2 py-1 rounded-lg hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-colors">Switch</button>`}
+        <button onclick="renameProfilePrompt('${p.id}','${esc(p.name)}')" class="p-1.5 rounded-lg text-slate-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors" title="Rename">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
+        </button>
+        ${profiles.length > 1 && p.id !== activeProfileId
+          ? `<button onclick="deleteProfile('${p.id}')" class="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" title="Delete">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            </button>`
+          : '<span class="w-7"></span>'}
+      </div>
+    </div>`).join('');
+}
+
+function addProfile() {
+  const input = document.getElementById('new-profile-name');
+  const name = input ? input.value.trim() : '';
+  if (!name) { toast('Please enter a company name.', 'red'); return; }
+  const profiles = getProfiles();
+  if (profiles.find(p => p.name.toLowerCase() === name.toLowerCase())) {
+    toast('A company with that name already exists.', 'red'); return;
+  }
+  const id = 'profile_' + Date.now();
+  profiles.push({ id, name, createdAt: new Date().toISOString() });
+  saveProfiles(profiles);
+  if (input) input.value = '';
+  renderProfileModal();
+  renderProfileSwitcher();
+  toast(`Company "${name}" created. Click Switch to activate.`, 'green');
+}
+
+function renameProfilePrompt(id, currentName) {
+  const newName = prompt(`Rename company:`, currentName);
+  if (!newName || !newName.trim() || newName.trim() === currentName) return;
+  const profiles = getProfiles();
+  const p = profiles.find(x => x.id === id);
+  if (!p) return;
+  p.name = newName.trim();
+  saveProfiles(profiles);
+  renderProfileModal();
+  renderProfileSwitcher();
+  toast(`Renamed to "${p.name}".`, 'green');
+}
+
+function deleteProfile(id) {
+  const profiles = getProfiles();
+  const p = profiles.find(x => x.id === id);
+  if (!p) return;
+  if (!confirm(`Delete company "${p.name}" and ALL its data? This cannot be undone.`)) return;
+  // Remove all profile-scoped storage
+  ['employees','runs','settings','layout','logo'].forEach(k =>
+    localStorage.removeItem(`smartpayroll_${k}_${id}`)
+  );
+  const updated = profiles.filter(x => x.id !== id);
+  saveProfiles(updated);
+  renderProfileModal();
+  renderProfileSwitcher();
+  toast(`Company "${p.name}" deleted.`, 'red');
+}
 
 // ============================================================
 // PAYROLL EXPENSE REPORT
@@ -1862,14 +2082,16 @@ function saveSettings() {
 }
 
 function clearAllData() {
-  if(!confirm('Delete ALL data (employees, payroll runs, settings)? This cannot be undone.')) return;
-  localStorage.removeItem('smartpayroll_employees');
-  localStorage.removeItem('smartpayroll_runs');
-  localStorage.removeItem('smartpayroll_settings');
-  localStorage.removeItem('smartpayroll_layout');
-  localStorage.removeItem('smartpayroll_logo'); // legacy key cleanup
+  const profile = getProfiles().find(p=>p.id===activeProfileId);
+  const profileName = profile ? profile.name : 'this company';
+  if(!confirm(`Delete ALL data for "${profileName}"? This cannot be undone.`)) return;
+  localStorage.removeItem(profileKey('employees'));
+  localStorage.removeItem(profileKey('runs'));
+  localStorage.removeItem(profileKey('settings'));
+  localStorage.removeItem(profileKey('layout'));
+  localStorage.removeItem(profileKey('logo'));
   _logoCache = '';
-  _logoDB.clear().catch(() => {}); // clear logo from IndexedDB
+  _logoDB.clear().catch(() => {}); // clear logo from IndexedDB for this profile
   employees=[]; payrollRuns=[]; settings={}; payrollEntries={};
   layoutConfig = { preset:'namibian', primaryColor:'#003DA6', accentColor:'#009A44', netPayColor:'#065f46', earningsBg:'#eff6ff', deductionsBg:'#fef2f2', flagBar:true, headerStyle:'classic', logoType:'none', logoText:'', logoData:'', payslipTitle:'PAYSLIP', font:'arial', netPayStyle:'box', twoColumns:false, showEmployerCosts:true, showSignatureLines:true, showAccountNumber:true, showYTD:false, customFooter:'Generated by SmartPayroll – Namibian Payroll System', watermark:'', spacingAfterHeader:5, spacingEmployeeBox:38, spacingAfterEmpBox:5, spacingSectionGap:12, spacingRowHeight:5, spacingAfterNetPay:8 };
   updateDashboard(); renderEmployees(); renderPayslips();
@@ -2298,6 +2520,7 @@ document.getElementById('current-date').textContent = new Date().toLocaleDateStr
 // ============================================================
 // INIT
 // ============================================================
+initProfiles();
 load();
 warmLogo(); // Async: loads logo from IndexedDB into layoutConfig.logoData
 initDarkMode();
